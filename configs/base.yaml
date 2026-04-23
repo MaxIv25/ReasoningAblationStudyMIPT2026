@@ -24,7 +24,7 @@ training:
   save_strategy: "steps"
   save_steps: 500
   logging_steps: 50
-  eval_steps: 200
+  eval_steps: 500
 
   # Full FT defaults
   # LR=1e-5: standard for SFT on reasoning traces.
