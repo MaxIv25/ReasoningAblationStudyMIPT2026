@@ -62,6 +62,7 @@ def load_openr1_math(
         - problem: str
         - trace: str (selected correct R1 reasoning trace)
         - trace_length: int (word count of trace)
+        - difficulty: float (1 - pass_rate, higher = harder)
     """
     logger.info(f"Loading open-r1/OpenR1-Math-220k split={split}...")
     ds = load_dataset("open-r1/OpenR1-Math-220k", split=split)
@@ -70,13 +71,11 @@ def load_openr1_math(
     if filter_config is None:
         filter_config = {
             "min_trace_words": 20,
-            "max_trace_words": 8000,
             "require_think_tags": True,
             "require_boxed": True,
         }
 
     min_words = filter_config.get("min_trace_words", 20)
-    max_words = filter_config.get("max_trace_words", 8000)
     require_think = filter_config.get("require_think_tags", True)
     require_boxed = filter_config.get("require_boxed", True)
 
@@ -110,14 +109,24 @@ def load_openr1_math(
             continue
 
         word_count = len(trace.split())
-        if word_count < min_words or word_count > max_words:
+        if word_count < min_words:
             skipped_filter += 1
             continue
+
+        # Compute difficulty from correctness ratio:
+        # pass_rate = fraction of correct generations
+        # difficulty = 1 - pass_rate (higher = harder)
+        # E.g.: 1/4 correct → difficulty=0.75, 4/4 correct → difficulty=0.0
+        num_correct = sum(1 for c in correctness if c)
+        num_total = len(correctness)
+        pass_rate = num_correct / num_total if num_total > 0 else 0
+        difficulty = 1.0 - pass_rate
 
         processed.append({
             "problem": example["problem"],
             "trace": trace,
             "trace_length": word_count,
+            "difficulty": round(difficulty, 4),
         })
 
     logger.info(
@@ -128,6 +137,13 @@ def load_openr1_math(
 
     # Convert to HuggingFace Dataset
     result_ds = Dataset.from_list(processed)
+
+    # Log difficulty distribution
+    diffs = result_ds["difficulty"]
+    logger.info(
+        f"Difficulty: min={min(diffs):.2f}, max={max(diffs):.2f}, "
+        f"mean={sum(diffs)/len(diffs):.2f}"
+    )
 
     # Sample if needed
     if num_samples and num_samples < len(result_ds):
@@ -187,6 +203,7 @@ def format_for_sft(
         return {
             "messages": messages,
             "solution_length": example.get("trace_length", len(trace.split())),
+            "difficulty": example.get("difficulty", 0.0),
         }
 
     formatted = dataset.map(format_fn, num_proc=4)
@@ -212,13 +229,20 @@ def apply_curriculum(
     order: str = "easy_to_hard",
 ) -> Dataset:
     """
-    Sort dataset by difficulty (trace length as proxy).
+    Sort dataset by difficulty for curriculum learning.
     
-    Shorter traces ≈ easier problems (simpler reasoning needed).
-    Longer traces ≈ harder problems (more complex reasoning).
+    Difficulty is computed from the correctness ratio in OpenR1-Math:
+    - difficulty = 1 - (num_correct / num_total_generations)
+    - E.g.: 1/4 correct → difficulty=0.75 (hard)
+    - E.g.: 4/4 correct → difficulty=0.0 (easy)
+    
+    This is a much better proxy than trace length, because:
+    - Length ≠ difficulty (verbose ≠ hard, short ≠ easy)
+    - Length-based sorting creates bias toward longer outputs
+    - Correctness ratio directly measures how hard R1 found the problem
     
     Args:
-        dataset: Dataset with "solution_length" column
+        dataset: Dataset with "difficulty" column
         order: "easy_to_hard", "hard_to_easy", or "random"
     
     Returns:
@@ -227,9 +251,9 @@ def apply_curriculum(
     if order == "random":
         return dataset.shuffle(seed=42)
     elif order == "easy_to_hard":
-        return dataset.sort("solution_length")
+        return dataset.sort("difficulty")
     elif order == "hard_to_easy":
-        return dataset.sort("solution_length", reverse=True)
+        return dataset.sort("difficulty", reverse=True)
     else:
         raise ValueError(f"Unknown curriculum order: {order}")
 
