@@ -25,8 +25,9 @@ def generate_traces(
     teacher_model: str,
     prompts: list[str],
     max_new_tokens: int = 4096,
-    temperature: float = 0.7,
+    temperature: float = 0.6,
     top_p: float = 0.95,
+    top_k: int = 20,
     tensor_parallel_size: int = 1,
     gpu_memory_utilization: float = 0.9,
     batch_size: int = 100,
@@ -63,6 +64,7 @@ def generate_traces(
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=top_p,
+        top_k=top_k,
         max_tokens=max_new_tokens,
     )
 
@@ -143,7 +145,7 @@ def generate_and_save(
     for prompt, trace in zip(prompts, traces):
         data.append({
             "problem": prompt,
-            "solution": trace,
+            "trace": trace,
             "teacher": teacher_model,
         })
 
@@ -184,7 +186,8 @@ def main():
         help="Path to config YAML",
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.7,
+        "--temperature", type=float, default=0.6,
+        help="Sampling temperature (Qwen3 recommended: 0.6 for thinking mode)",
     )
 
     args = parser.parse_args()

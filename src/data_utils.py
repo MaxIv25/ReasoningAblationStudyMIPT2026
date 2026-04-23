@@ -1,10 +1,20 @@
 """
 Data loading and preparation utilities for SFT Ablation Study.
 
+OpenR1-Math-220K structure:
+    - problem: str — math problem text
+    - generations: list[str] — 2-4 reasoning traces from DeepSeek-R1
+    - correctness_math_verify: list[bool] — correctness for each trace
+    - correctness_llama: list[bool] — correctness verified by Llama-3.3-70B
+    - messages: list[dict] — pre-formatted chat messages (from first correct trace)
+    - solution: str — original NuminaMath solution (NOT R1 trace)
+
+For SFT we use `generations` (R1 traces), picking the first correct one per problem.
+
 Handles:
-- OpenR1-Math-220K loading and filtering
-- Chat template formatting for Qwen3.5
-- Curriculum sorting
+- OpenR1-Math-220K loading and filtering (correct R1 traces only)
+- Chat template formatting for Qwen3.5 with <think> prefix
+- Curriculum sorting by trace length
 - Train/eval splitting
 """
 
@@ -38,6 +48,9 @@ def load_openr1_math(
     """
     Load and filter OpenR1-Math-220K dataset.
     
+    For each problem, selects the FIRST CORRECT trace from `generations`
+    (verified by math_verify). Filters by trace quality.
+    
     Args:
         split: Dataset split ("default" or "extended")
         num_samples: Number of samples to keep (None = all)
@@ -45,69 +58,83 @@ def load_openr1_math(
         filter_config: Dict with filtering parameters
     
     Returns:
-        Filtered HuggingFace Dataset
+        Filtered HuggingFace Dataset with columns:
+        - problem: str
+        - trace: str (selected correct R1 reasoning trace)
+        - trace_length: int (word count of trace)
     """
     logger.info(f"Loading open-r1/OpenR1-Math-220k split={split}...")
     ds = load_dataset("open-r1/OpenR1-Math-220k", split=split)
     logger.info(f"Raw dataset size: {len(ds)}")
 
-    # Apply filtering
     if filter_config is None:
         filter_config = {
-            "min_think_words": 20,
-            "max_think_words": 2000,
+            "min_trace_words": 20,
+            "max_trace_words": 8000,
             "require_think_tags": True,
             "require_boxed": True,
         }
 
-    def filter_fn(example):
-        solution = example.get("solution", "") or ""
+    min_words = filter_config.get("min_trace_words", 20)
+    max_words = filter_config.get("max_trace_words", 8000)
+    require_think = filter_config.get("require_think_tags", True)
+    require_boxed = filter_config.get("require_boxed", True)
 
-        # Check for <think> tags
-        if filter_config.get("require_think_tags", True):
-            if "<think>" not in solution or "</think>" not in solution:
-                return False
+    # Process each example: pick first correct trace
+    processed = []
+    skipped_no_correct = 0
+    skipped_filter = 0
 
-        # Check for \boxed{}
-        if filter_config.get("require_boxed", True):
-            if "\\boxed{" not in solution:
-                return False
+    for example in tqdm(ds, desc="Processing traces"):
+        generations = example.get("generations", [])
+        correctness = example.get("correctness_math_verify", [])
 
-        # Check thinking length
-        think_match = re.search(r"<think>(.*?)</think>", solution, re.DOTALL)
-        if think_match:
-            think_text = think_match.group(1)
-            word_count = len(think_text.split())
-            min_words = filter_config.get("min_think_words", 20)
-            max_words = filter_config.get("max_think_words", 2000)
-            if word_count < min_words or word_count > max_words:
-                return False
-        elif filter_config.get("require_think_tags", True):
-            return False
+        # Find the first correct generation
+        trace = None
+        for gen, is_correct in zip(generations, correctness):
+            if is_correct:
+                trace = gen
+                break
 
-        return True
+        if trace is None:
+            skipped_no_correct += 1
+            continue
 
-    filtered = ds.filter(filter_fn, num_proc=4)
-    logger.info(f"After filtering: {len(filtered)} ({len(filtered)/len(ds)*100:.1f}%)")
+        # Apply filters
+        if require_think and ("<think>" not in trace or "</think>" not in trace):
+            skipped_filter += 1
+            continue
+
+        if require_boxed and "\\boxed{" not in trace:
+            skipped_filter += 1
+            continue
+
+        word_count = len(trace.split())
+        if word_count < min_words or word_count > max_words:
+            skipped_filter += 1
+            continue
+
+        processed.append({
+            "problem": example["problem"],
+            "trace": trace,
+            "trace_length": word_count,
+        })
+
+    logger.info(
+        f"Processed: {len(processed)} examples "
+        f"(skipped {skipped_no_correct} no correct trace, "
+        f"{skipped_filter} filtered out)"
+    )
+
+    # Convert to HuggingFace Dataset
+    result_ds = Dataset.from_list(processed)
 
     # Sample if needed
-    if num_samples and num_samples < len(filtered):
-        filtered = filtered.shuffle(seed=seed).select(range(num_samples))
+    if num_samples and num_samples < len(result_ds):
+        result_ds = result_ds.shuffle(seed=seed).select(range(num_samples))
         logger.info(f"Sampled {num_samples} examples")
 
-    return filtered
-
-
-def get_solution_token_length(example: dict, tokenizer=None) -> int:
-    """
-    Get approximate length of solution in tokens.
-    
-    Uses word count as proxy if tokenizer is not provided.
-    """
-    solution = example.get("solution", "")
-    if tokenizer:
-        return len(tokenizer(solution)["input_ids"])
-    return len(solution.split())
+    return result_ds
 
 
 # ──────────────────────────────────────────────────────────────
@@ -116,45 +143,63 @@ def get_solution_token_length(example: dict, tokenizer=None) -> int:
 
 def format_for_sft(
     dataset: Dataset,
-    tokenizer=None,
-    system_prompt: str = None,
+    add_think_prefix: bool = True,
 ) -> Dataset:
     """
     Format dataset into chat messages for SFT with Qwen3.5.
     
-    The format follows Qwen's chat template:
-    <|im_start|>user
-    {question}<|im_end|>
-    <|im_start|>assistant
-    {solution}<|im_end|>
+    Qwen3 uses the following chat template:
+        <|im_start|>user
+        {question}<|im_end|>
+        <|im_start|>assistant
+        <think>
+        {reasoning}
+        </think>
+        {final_answer}<|im_end|>
+    
+    Since we're training a Base model, we need to explicitly include
+    <think> at the start of the assistant response so the model learns
+    to always begin with reasoning.
+    
+    If the trace already starts with <think>, we use it as-is.
+    If not, we prepend <think> to teach the thinking format.
     
     Args:
-        dataset: Filtered OpenR1-Math dataset
-        tokenizer: Tokenizer (optional, for applying chat template)
-        system_prompt: Optional system prompt
+        dataset: Dataset with "problem" and "trace" columns
+        add_think_prefix: If True, ensure trace starts with <think>
     
     Returns:
-        Dataset with "messages" or "text" column
+        Dataset with "messages" column for TRL SFTTrainer
     """
 
     def format_fn(example):
-        messages = []
+        trace = example["trace"]
 
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        # Ensure the trace starts with <think> tag
+        if add_think_prefix and not trace.strip().startswith("<think>"):
+            trace = "<think>\n" + trace
 
-        messages.append({"role": "user", "content": example["problem"]})
-        messages.append({"role": "assistant", "content": example["solution"]})
+        messages = [
+            {"role": "user", "content": example["problem"]},
+            {"role": "assistant", "content": trace},
+        ]
 
-        result = {"messages": messages}
-
-        # Add solution length for curriculum sorting
-        result["solution_length"] = len(example.get("solution", "").split())
-
-        return result
+        return {
+            "messages": messages,
+            "solution_length": example.get("trace_length", len(trace.split())),
+        }
 
     formatted = dataset.map(format_fn, num_proc=4)
     logger.info(f"Formatted {len(formatted)} examples into chat messages")
+
+    # Log stats
+    lengths = formatted["solution_length"]
+    logger.info(
+        f"Trace lengths: min={min(lengths)}, max={max(lengths)}, "
+        f"mean={sum(lengths)/len(lengths):.0f}, "
+        f"median={sorted(lengths)[len(lengths)//2]}"
+    )
+
     return formatted
 
 
@@ -167,7 +212,10 @@ def apply_curriculum(
     order: str = "easy_to_hard",
 ) -> Dataset:
     """
-    Sort dataset by difficulty (solution length as proxy).
+    Sort dataset by difficulty (trace length as proxy).
+    
+    Shorter traces ≈ easier problems (simpler reasoning needed).
+    Longer traces ≈ harder problems (more complex reasoning).
     
     Args:
         dataset: Dataset with "solution_length" column
@@ -256,7 +304,8 @@ def prepare_sft_data(
 
         # Save stats
         stats = {
-            "raw_size": len(ds),
+            "raw_dataset_size": "open-r1/OpenR1-Math-220k",
+            "processed_size": len(ds),
             "train_size": len(splits["train"]),
             "eval_size": len(splits["eval"]),
             "curriculum": curriculum,

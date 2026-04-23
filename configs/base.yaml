@@ -6,7 +6,7 @@ model:
   name: "Qwen/Qwen3.5-4B-Base"
   # Если модель скачана в кастомную директорию, укажите путь:
   # name: "/path/to/local/Qwen3.5-4B-Base"
-  max_seq_len: 4096
+  max_seq_len: 8192       # R1 traces can be long (generated with 16K limit)
   torch_dtype: "bfloat16"
 
 teacher:
@@ -14,8 +14,8 @@ teacher:
   # name: "/path/to/local/Qwen3.5-35B-A3B"
 
 training:
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 4   # effective batch = 16
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8   # effective batch = 16
   warmup_ratio: 0.05
   weight_decay: 0.01
   bf16: true
@@ -27,11 +27,16 @@ training:
   eval_steps: 200
 
   # Full FT defaults
+  # LR=1e-5: standard for SFT on reasoning traces.
+  # Слишком большой LR ломает pretrained знания, слишком маленький — модель не учится.
+  # DeepSeek-R1 paper и Open-R1 репорты используют порядок 1e-5 для Full FT.
   full_ft:
     learning_rate: 1.0e-5
     num_train_epochs: 2
 
   # LoRA/DoRA/PiSSA defaults
+  # LR=2e-4: LoRA обновляет мало параметров → можно агрессивнее.
+  # r=64, alpha=128 → effective scaling = alpha/r = 2.0
   lora:
     learning_rate: 2.0e-4
     num_train_epochs: 3
@@ -40,6 +45,9 @@ training:
     lora_dropout: 0.05
     target_modules: "all-linear"
 
+  # Cosine scheduler включён по умолчанию (lr_scheduler_type: "cosine" в train_sft.py).
+  # Phase 4 будет аблировать scheduler (constant LR, linear decay, etc.)
+
 data:
   dataset: "open-r1/OpenR1-Math-220k"
   split: "default"
@@ -47,19 +55,25 @@ data:
   seed: 42
   eval_fraction: 0.05   # 5% held-out for eval loss
   
-  # Фильтрация
+  # Фильтрация R1 трасс (из колонки `generations`)
   filter:
-    min_think_words: 20
-    max_think_words: 2000
-    require_think_tags: true
-    require_boxed: true
+    min_trace_words: 20       # убрать слишком короткие/пустые
+    max_trace_words: 8000     # R1 генерировался с лимитом 16K токенов,
+                              # ~8000 слов ≈ 12K токенов — покрывает большинство
+    require_think_tags: true  # только трассы с <think>...</think>
+    require_boxed: true       # только трассы с \boxed{} ответом
 
 eval:
   benchmarks:
     - gsm8k
     - math500
-  max_new_tokens: 2048
-  temperature: 0.0       # greedy for pass@1
+  max_new_tokens: 4096
+  # Qwen3 best practices: для thinking mode НЕ использовать greedy!
+  # "DO NOT use greedy decoding, as it can lead to performance degradation
+  #  and endless repetitions."
+  temperature: 0.6       # Qwen3 recommended for thinking mode
+  top_p: 0.95            # Qwen3 recommended
+  top_k: 20              # Qwen3 recommended
   prompt_template: "Please reason step by step, and put your final answer within \\boxed{}."
 
 logging:

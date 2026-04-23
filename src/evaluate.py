@@ -116,8 +116,10 @@ def verify_answer(predicted: str | None, ground_truth: str) -> bool:
 def evaluate_model(
     model_path: str,
     benchmarks: list[str] = None,
-    max_new_tokens: int = 2048,
-    temperature: float = 0.0,
+    max_new_tokens: int = 4096,
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    top_k: int = 20,
     num_samples: int = 1,
     prompt_template: str = None,
     tensor_parallel_size: int = 1,
@@ -130,7 +132,9 @@ def evaluate_model(
         model_path: HuggingFace model ID or local path
         benchmarks: List of benchmarks ["gsm8k", "math500"]
         max_new_tokens: Max tokens to generate
-        temperature: 0.0 for greedy (pass@1), >0 for sampling (maj@K)
+        temperature: Qwen3 recommends 0.6 for thinking mode (DO NOT use greedy)
+        top_p: Top-p sampling (Qwen3 default: 0.95)
+        top_k: Top-k sampling (Qwen3 default: 20)
         num_samples: Number of samples per question (1 for pass@1, 8 for maj@8)
         prompt_template: Template for the prompt
         tensor_parallel_size: Number of GPUs for tensor parallelism
@@ -168,12 +172,15 @@ def evaluate_model(
             gpu_memory_utilization=gpu_memory_utilization,
             dtype="bfloat16",
             trust_remote_code=True,
-            max_model_len=max_new_tokens + 512,  # input + output
+            max_model_len=max_new_tokens + 1024,  # input + output
         )
 
+    # Qwen3 best practices: t=0.6, top_p=0.95, top_k=20 for thinking mode.
+    # DO NOT use greedy (t=0) — causes performance degradation and repetitions.
     sampling_params = SamplingParams(
-        temperature=temperature if temperature > 0 else 0.0,
-        top_p=0.95 if temperature > 0 else 1.0,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
         max_tokens=max_new_tokens,
         n=num_samples,
     )
@@ -295,12 +302,20 @@ def main():
         help="Benchmarks to evaluate on",
     )
     parser.add_argument(
-        "--max-new-tokens", type=int, default=2048,
+        "--max-new-tokens", type=int, default=4096,
         help="Max tokens to generate",
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.0,
-        help="Sampling temperature (0.0 for greedy)",
+        "--temperature", type=float, default=0.6,
+        help="Sampling temperature (Qwen3: 0.6 for thinking mode, DO NOT use 0.0)",
+    )
+    parser.add_argument(
+        "--top-p", type=float, default=0.95,
+        help="Top-p sampling (Qwen3 default: 0.95)",
+    )
+    parser.add_argument(
+        "--top-k", type=int, default=20,
+        help="Top-k sampling (Qwen3 default: 20)",
     )
     parser.add_argument(
         "--num-samples", type=int, default=1,
@@ -330,6 +345,8 @@ def main():
         benchmarks=args.benchmarks,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
         num_samples=args.num_samples,
         tensor_parallel_size=args.tp,
         gpu_memory_utilization=args.gpu_mem,

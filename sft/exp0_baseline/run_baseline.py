@@ -55,9 +55,11 @@ def main():
     results = evaluate_model(
         model_path=args.model,
         benchmarks=["gsm8k", "math500"],
-        max_new_tokens=2048,
-        temperature=0.0,  # greedy, pass@1
-        num_samples=1,
+        max_new_tokens=4096,
+        temperature=0.6,      # Qwen3 recommended for thinking mode
+        top_p=0.95,
+        top_k=20,
+        num_samples=1,        # pass@1
         tensor_parallel_size=args.tp,
         gpu_memory_utilization=args.gpu_mem,
     )
