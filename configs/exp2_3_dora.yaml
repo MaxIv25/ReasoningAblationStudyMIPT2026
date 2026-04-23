@@ -1,0 +1,12 @@
+# Exp 2.3: DoRA r=64
+method: dora
+run_name: "exp2_3_dora"
+
+training:
+  lora:
+    learning_rate: 2.0e-4
+    num_train_epochs: 3
+    r: 64
+    lora_alpha: 128
+    lora_dropout: 0.05
+    target_modules: "all-linear"

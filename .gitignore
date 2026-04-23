@@ -1,0 +1,39 @@
+# Outputs and checkpoints
+outputs/
+data/
+
+# Results (keep structure but not large files)
+**/results/*.json
+!**/results/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# WandB
+wandb/
+
+# HuggingFace cache
+*.safetensors
+*.bin
+*.pt
+model-*.index.json
+
+# Jupyter
+.ipynb_checkpoints/

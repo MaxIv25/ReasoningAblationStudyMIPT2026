@@ -1,0 +1,8 @@
+# Exp 1.2: SFT on Qwen3.5-35B-A3B generated traces
+method: full_ft
+run_name: "exp1_2_qwen_traces"
+
+training:
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2

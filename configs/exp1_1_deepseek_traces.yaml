@@ -1,0 +1,8 @@
+# Exp 1.1: SFT on DeepSeek-R1 traces (OpenR1-Math-220K)
+method: full_ft
+run_name: "exp1_1_deepseek_traces"
+
+training:
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2

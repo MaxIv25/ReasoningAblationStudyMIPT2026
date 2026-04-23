@@ -1,0 +1,69 @@
+# ============================================================
+# Base config — shared across all SFT ablation experiments
+# ============================================================
+
+model:
+  name: "Qwen/Qwen3.5-4B-Base"
+  # Если модель скачана в кастомную директорию, укажите путь:
+  # name: "/path/to/local/Qwen3.5-4B-Base"
+  max_seq_len: 4096
+  torch_dtype: "bfloat16"
+
+teacher:
+  name: "Qwen/Qwen3.5-35B-A3B"
+  # name: "/path/to/local/Qwen3.5-35B-A3B"
+
+training:
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4   # effective batch = 16
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  bf16: true
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  save_strategy: "steps"
+  save_steps: 500
+  logging_steps: 50
+  eval_steps: 200
+
+  # Full FT defaults
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2
+
+  # LoRA/DoRA/PiSSA defaults
+  lora:
+    learning_rate: 2.0e-4
+    num_train_epochs: 3
+    r: 64
+    lora_alpha: 128
+    lora_dropout: 0.05
+    target_modules: "all-linear"
+
+data:
+  dataset: "open-r1/OpenR1-Math-220k"
+  split: "default"
+  num_samples: 20000
+  seed: 42
+  eval_fraction: 0.05   # 5% held-out for eval loss
+  
+  # Фильтрация
+  filter:
+    min_think_words: 20
+    max_think_words: 2000
+    require_think_tags: true
+    require_boxed: true
+
+eval:
+  benchmarks:
+    - gsm8k
+    - math500
+  max_new_tokens: 2048
+  temperature: 0.0       # greedy for pass@1
+  prompt_template: "Please reason step by step, and put your final answer within \\boxed{}."
+
+logging:
+  report_to: "tensorboard"   # tensorboard logs → outputs/runs/
+  # Для просмотра: tensorboard --logdir outputs/
+  log_steps: 50
+  eval_steps: 200

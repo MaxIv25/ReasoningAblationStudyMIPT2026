@@ -1,0 +1,15 @@
+# Exp 1.3: SFT on R1 traces + KL-constraint with Qwen3.5-35B-A3B teacher
+# NOTE: This experiment requires a custom training loop (not standard SFTTrainer)
+# The KL loss is computed between student and teacher logits on each batch
+method: full_ft
+run_name: "exp1_3_kl_constraint"
+
+kl_constraint:
+  enabled: true
+  alpha: 0.3          # weight of KL loss: total = sft_loss + alpha * kl_loss
+  temperature: 2.0    # temperature for KL computation
+
+training:
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2

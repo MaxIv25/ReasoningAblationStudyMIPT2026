@@ -1,0 +1,8 @@
+# Exp 2.1: Full Fine-Tuning
+method: full_ft
+run_name: "exp2_1_full_ft"
+
+training:
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2

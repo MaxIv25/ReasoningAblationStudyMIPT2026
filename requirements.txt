@@ -1,0 +1,15 @@
+torch>=2.4
+transformers>=4.51
+trl>=0.16
+peft>=0.14
+vllm>=0.8
+datasets
+accelerate
+math-verify
+tensorboard
+hf_transfer
+pyyaml
+numpy
+pandas
+matplotlib
+tqdm
