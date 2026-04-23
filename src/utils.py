@@ -132,10 +132,10 @@ def get_gpu_memory_info() -> dict:
         reserved = torch.cuda.memory_reserved(i)
         info[f"gpu_{i}"] = {
             "name": props.name,
-            "total_gb": round(props.total_mem / 1e9, 2),
+            "total_gb": round(props.total_memory / 1e9, 2),
             "allocated_gb": round(allocated / 1e9, 2),
             "reserved_gb": round(reserved / 1e9, 2),
-            "free_gb": round((props.total_mem - allocated) / 1e9, 2),
+            "free_gb": round((props.total_memory - allocated) / 1e9, 2),
         }
     return info
 
