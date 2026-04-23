@@ -88,9 +88,12 @@ def verify_answer(predicted: str | None, ground_truth: str) -> bool:
 
     # Try math_verify first
     try:
-        from math_verify import verify_answer as math_verify_answer
-        return math_verify_answer(predicted, ground_truth)
+        from math_verify import parse, verify
+        return verify(parse(ground_truth), parse(predicted))
     except ImportError:
+        pass
+    except Exception:
+        # math_verify can throw on unparseable expressions
         pass
 
     # Fallback: string-based comparison
@@ -175,7 +178,7 @@ def evaluate_model(
             gpu_memory_utilization=gpu_memory_utilization,
             dtype="bfloat16",
             trust_remote_code=True,
-            max_model_len=max_new_tokens + 1024,  # input + output
+            max_model_len=max_new_tokens + 4096,  # input (up to 4K) + output
         )
 
     # Qwen3 best practices: t=0.6, top_p=0.95, top_k=20 for thinking mode.

@@ -21,17 +21,24 @@ echo "=========================================="
 echo "PHASE 2: TRAINING METHOD ABLATION"
 echo "=========================================="
 
+declare -A EXP_CONFIGS=(
+    [full_ft]="configs/exp2_1_full_ft.yaml"
+    [lora]="configs/exp2_2_lora.yaml"
+    [dora]="configs/exp2_3_dora.yaml"
+    [pissa]="configs/exp2_4_pissa.yaml"
+)
+
 for METHOD in full_ft lora dora pissa; do
-    EXP_NUM="2_$(echo $METHOD | tr '_' '-')"
-    echo "[Exp $EXP_NUM] Training with $METHOD..."
+    CONFIG="${EXP_CONFIGS[$METHOD]}"
+    echo "[Exp 2 — $METHOD] Training..."
     
     python src/train_sft.py \
-        --config "configs/exp2_${METHOD//-/_}.yaml" \
+        --config "$CONFIG" \
         --data-dir "$DATA_DIR" \
         --output-dir "outputs/exp2_${METHOD}" \
         --method "$METHOD"
     
-    echo "[Exp $EXP_NUM] Evaluating..."
+    echo "[Exp 2 — $METHOD] Evaluating..."
     python src/evaluate.py \
         --model "outputs/exp2_${METHOD}" \
         --output "$RESULTS_DIR/exp2_${METHOD}_results.json" \

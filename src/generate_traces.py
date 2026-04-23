@@ -58,7 +58,7 @@ def generate_traces(
             gpu_memory_utilization=gpu_memory_utilization,
             dtype="bfloat16",
             trust_remote_code=True,
-            max_model_len=max_new_tokens + 1024,
+            max_model_len=max_new_tokens + 4096,  # input (up to 4K) + output
         )
 
     sampling_params = SamplingParams(

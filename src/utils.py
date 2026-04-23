@@ -74,13 +74,27 @@ def extract_boxed_answer(text: str) -> str | None:
     """
     Извлечение ответа из \\boxed{...}.
     
-    Поддерживает вложенные скобки: \\boxed{\\frac{1}{2}}
+    Использует stack-based matching для корректной обработки
+    произвольной вложенности скобок:
+        \\boxed{\\frac{1}{\\sqrt{2}}}  — 3 уровня
+        \\boxed{\\left(\\frac{a}{b}\\right)}  — 2 уровня
+    
+    Берёт ПОСЛЕДНИЙ \\boxed{...} в тексте (финальный ответ).
     """
-    # Ищем последний \\boxed{...}
-    pattern = r'\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}'
-    matches = re.findall(pattern, text)
-    if matches:
-        return matches[-1].strip()
+    idx = text.rfind("\\boxed{")
+    if idx == -1:
+        return None
+    start = idx + len("\\boxed{")
+    depth = 1
+    i = start
+    while i < len(text) and depth > 0:
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+        i += 1
+    if depth == 0:
+        return text[start:i-1].strip()
     return None
 
 
