@@ -6,7 +6,7 @@ model:
   name: "Qwen/Qwen3.5-4B-Base"
   # Если модель скачана в кастомную директорию, укажите путь:
   # name: "/path/to/local/Qwen3.5-4B-Base"
-  max_seq_len: 4096       # Most R1 traces fit in 4K. 8192 is 4x slower (attention is O(n²)).
+  max_seq_len: 8192       # Full R1 traces, no truncation for ablation quality
   torch_dtype: "bfloat16"
 
 teacher:
