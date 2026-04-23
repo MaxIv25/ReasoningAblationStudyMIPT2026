@@ -87,21 +87,18 @@ def load_aime2026() -> list[dict]:
 
 
 def load_math_hard() -> list[dict]:
-    """Load MATH Level 5 — hardest problems from Hendrycks MATH.
+    """Load MATH-Hard — Level 5 (hardest) problems from Hendrycks MATH.
     
-    Filters the competition_math test set to Level 5 only (~1.3K problems).
-    Much harder than MATH-500 (which is mixed levels).
+    Uses lighteval/MATH-Hard which is a pre-filtered subset of
+    competition_math containing only Level 5 problems (~1.3K).
+    Answer is extracted from \\boxed{} in the solution field.
     """
-    ds = load_dataset("hendrycks/competition_math", split="test")
-    ds = ds.filter(lambda x: x["level"] == "Level 5")
+    ds = load_dataset("lighteval/MATH-Hard", split="test")
     examples = []
     for item in ds:
-        # MATH: answer in 'solution' contains \boxed{}, extract it
-        answer = item.get("answer", "")
-        if not answer:
-            # Fallback: extract from solution
-            from src.utils import extract_boxed_answer
-            answer = extract_boxed_answer(item.get("solution", "")) or ""
+        # Extract answer from \boxed{} in solution
+        from src.utils import extract_boxed_answer
+        answer = extract_boxed_answer(item.get("solution", "")) or ""
         examples.append({
             "question": item["problem"],
             "answer": answer,
