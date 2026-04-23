@@ -48,7 +48,8 @@ python src/train_sft.py \
 echo "[Exp 1.1] Evaluating..."
 python src/evaluate.py \
     --model "outputs/exp1_1_deepseek_traces" \
-    --output "$RESULTS_DIR/exp1_1_results.json"
+    --output "$RESULTS_DIR/exp1_1_results.json" \
+    --chat-template
 
 # ── Exp 1.2: SFT on Qwen traces ──────────────────────────────
 
@@ -61,7 +62,8 @@ python src/train_sft.py \
 echo "[Exp 1.2] Evaluating..."
 python src/evaluate.py \
     --model "outputs/exp1_2_qwen_traces" \
-    --output "$RESULTS_DIR/exp1_2_results.json"
+    --output "$RESULTS_DIR/exp1_2_results.json" \
+    --chat-template
 
 # ── Exp 1.3: SFT + KL-constraint ─────────────────────────────
 
@@ -74,7 +76,8 @@ python src/train_sft.py \
 echo "[Exp 1.3] Evaluating..."
 python src/evaluate.py \
     --model "outputs/exp1_3_kl_constraint" \
-    --output "$RESULTS_DIR/exp1_3_results.json"
+    --output "$RESULTS_DIR/exp1_3_results.json" \
+    --chat-template
 
 echo "=========================================="
 echo "PHASE 1 COMPLETE"

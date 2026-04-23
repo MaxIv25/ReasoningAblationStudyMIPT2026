@@ -34,7 +34,8 @@ for METHOD in full_ft lora dora pissa; do
     echo "[Exp $EXP_NUM] Evaluating..."
     python src/evaluate.py \
         --model "outputs/exp2_${METHOD}" \
-        --output "$RESULTS_DIR/exp2_${METHOD}_results.json"
+        --output "$RESULTS_DIR/exp2_${METHOD}_results.json" \
+        --chat-template
 done
 
 echo "=========================================="

@@ -122,6 +122,7 @@ def evaluate_model(
     top_k: int = 20,
     num_samples: int = 1,
     prompt_template: str = None,
+    use_chat_template: bool = False,
     tensor_parallel_size: int = 1,
     gpu_memory_utilization: float = 0.9,
 ) -> dict:
@@ -137,6 +138,8 @@ def evaluate_model(
         top_k: Top-k sampling (Qwen3 default: 20)
         num_samples: Number of samples per question (1 for pass@1, 8 for maj@8)
         prompt_template: Template for the prompt
+        use_chat_template: If True, wrap prompt in Qwen3 chat template with
+            <think> prefix. Use True for fine-tuned models, False for base model.
         tensor_parallel_size: Number of GPUs for tensor parallelism
         gpu_memory_utilization: Fraction of GPU memory to use
     
@@ -185,6 +188,8 @@ def evaluate_model(
         n=num_samples,
     )
 
+    logger.info(f"Chat template: {use_chat_template}")
+
     results = {}
     for bench_name, examples in all_examples.items():
         logger.info(f"\n{'='*60}")
@@ -194,7 +199,21 @@ def evaluate_model(
         # Build prompts
         prompts = []
         for ex in examples:
-            prompt = f"{ex['question']}\n\n{prompt_template}"
+            question = f"{ex['question']}\n\n{prompt_template}"
+
+            if use_chat_template:
+                # For fine-tuned models: use chat template + <think> prefix
+                # so model generates in the format it was trained on.
+                # The model will continue from "<think>\n" and produce
+                # reasoning + </think> + \boxed{answer}
+                prompt = (
+                    f"<|im_start|>user\n{question}<|im_end|>\n"
+                    f"<|im_start|>assistant\n<think>\n"
+                )
+            else:
+                # For base model: just raw text, no chat template
+                prompt = question
+
             prompts.append(prompt)
 
         # Generate
@@ -337,6 +356,11 @@ def main():
         "--run-name", type=str, default=None,
         help="Name for this evaluation run (used in output filename)",
     )
+    parser.add_argument(
+        "--chat-template", action="store_true",
+        help="Use chat template with <think> prefix (for fine-tuned models). "
+             "Don't use for base model baseline.",
+    )
 
     args = parser.parse_args()
 
@@ -348,6 +372,7 @@ def main():
         top_p=args.top_p,
         top_k=args.top_k,
         num_samples=args.num_samples,
+        use_chat_template=args.chat_template,
         tensor_parallel_size=args.tp,
         gpu_memory_utilization=args.gpu_mem,
     )
