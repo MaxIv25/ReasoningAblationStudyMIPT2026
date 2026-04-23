@@ -143,7 +143,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
-        packing=True,            # Pack multiple examples into one sequence for efficiency
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "steps"),
         save_steps=train_cfg.get("save_steps", 500),
