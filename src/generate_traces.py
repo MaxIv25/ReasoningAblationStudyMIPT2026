@@ -124,7 +124,7 @@ def generate_and_save(
     """
     # Load prompts from OpenR1-Math
     logger.info("Loading prompts from OpenR1-Math-220k...")
-    ds = load_dataset("open-r1/OpenR1-Math-220k", split="default")
+    ds = load_dataset("open-r1/OpenR1-Math-220k", split="train")
 
     # Sample
     if num_samples < len(ds):

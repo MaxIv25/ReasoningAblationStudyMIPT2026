@@ -300,7 +300,7 @@ def prepare_sft_data(
 
     # Load and filter
     ds = load_openr1_math(
-        split=data_config.get("split", "default"),
+        split=data_config.get("split", "train"),
         num_samples=data_config.get("num_samples", 20000),
         seed=data_config.get("seed", 42),
         filter_config=filter_config,

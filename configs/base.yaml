@@ -50,7 +50,7 @@ training:
 
 data:
   dataset: "open-r1/OpenR1-Math-220k"
-  split: "default"
+  split: "train"
   num_samples: 20000
   seed: 42
   eval_fraction: 0.05   # 5% held-out for eval loss
