@@ -67,6 +67,8 @@ eval:
   benchmarks:
     - gsm8k
     - math500
+    - aime2026
+    - math_hard
   max_new_tokens: 4096
   # Qwen3 best practices: для thinking mode НЕ использовать greedy!
   # "DO NOT use greedy decoding, as it can lead to performance degradation

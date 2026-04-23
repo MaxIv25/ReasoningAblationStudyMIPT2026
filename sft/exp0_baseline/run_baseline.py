@@ -3,12 +3,10 @@
 Phase 0: Baseline evaluation.
 
 Evaluates raw Qwen3.5-4B-Base (without any fine-tuning) on:
-- GSM8K test (1.3K examples)
-- MATH-500
-
-Expected results:
-- GSM8K: ~20-40% (base model, no instruct)
-- MATH-500: ~5-15%
+- GSM8K test (1.3K examples) — school math, sanity check
+- MATH-500 — mixed difficulty competition math
+- AIME 2026 (30 examples) — olympiad, contamination-free
+- MATH Level 5 (~1.3K examples) — hardest competition problems
 
 Usage:
     python sft/exp0_baseline/run_baseline.py
@@ -54,7 +52,7 @@ def main():
     # Run evaluation
     results = evaluate_model(
         model_path=args.model,
-        benchmarks=["gsm8k", "math500"],
+        benchmarks=["gsm8k", "math500", "aime2026", "math_hard"],
         max_new_tokens=4096,
         temperature=0.6,      # Qwen3 recommended for thinking mode
         top_p=0.95,
@@ -80,7 +78,7 @@ def main():
     logger.info("\n" + "=" * 60)
     logger.info("BASELINE RESULTS SUMMARY")
     logger.info("=" * 60)
-    for bench in ["gsm8k", "math500"]:
+    for bench in ["gsm8k", "math500", "aime2026", "math_hard"]:
         if bench in results and isinstance(results[bench], dict):
             r = results[bench]
             logger.info(

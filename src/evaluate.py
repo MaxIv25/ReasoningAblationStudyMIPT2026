@@ -69,6 +69,47 @@ def load_math500() -> list[dict]:
     return examples
 
 
+def load_aime2026() -> list[dict]:
+    """Load AIME 2026 benchmark (30 olympiad-level problems).
+    
+    From MathArena — contamination-free competition problems.
+    AIME answers are always integers in range [0, 999].
+    """
+    ds = load_dataset("MathArena/aime_2026", split="train")
+    examples = []
+    for item in ds:
+        examples.append({
+            "question": item["problem"],
+            "answer": str(item["answer"]).strip(),
+            "source": "aime2026",
+        })
+    return examples
+
+
+def load_math_hard() -> list[dict]:
+    """Load MATH Level 5 — hardest problems from Hendrycks MATH.
+    
+    Filters the competition_math test set to Level 5 only (~1.3K problems).
+    Much harder than MATH-500 (which is mixed levels).
+    """
+    ds = load_dataset("hendrycks/competition_math", split="test")
+    ds = ds.filter(lambda x: x["level"] == "Level 5")
+    examples = []
+    for item in ds:
+        # MATH: answer in 'solution' contains \boxed{}, extract it
+        answer = item.get("answer", "")
+        if not answer:
+            # Fallback: extract from solution
+            from src.utils import extract_boxed_answer
+            answer = extract_boxed_answer(item.get("solution", "")) or ""
+        examples.append({
+            "question": item["problem"],
+            "answer": answer,
+            "source": "math_hard",
+        })
+    return examples
+
+
 # ──────────────────────────────────────────────────────────────
 # Answer verification
 # ──────────────────────────────────────────────────────────────
@@ -152,7 +193,7 @@ def evaluate_model(
     from vllm import LLM, SamplingParams
 
     if benchmarks is None:
-        benchmarks = ["gsm8k", "math500"]
+        benchmarks = ["gsm8k", "math500", "aime2026", "math_hard"]
 
     if prompt_template is None:
         prompt_template = (
@@ -168,6 +209,12 @@ def evaluate_model(
     if "math500" in benchmarks:
         all_examples["math500"] = load_math500()
         logger.info(f"Loaded MATH-500: {len(all_examples['math500'])} examples")
+    if "aime2026" in benchmarks:
+        all_examples["aime2026"] = load_aime2026()
+        logger.info(f"Loaded AIME 2026: {len(all_examples['aime2026'])} examples")
+    if "math_hard" in benchmarks:
+        all_examples["math_hard"] = load_math_hard()
+        logger.info(f"Loaded MATH Level 5: {len(all_examples['math_hard'])} examples")
 
     # Load model with vLLM
     logger.info(f"Loading model: {model_path}")
@@ -319,8 +366,9 @@ def main():
         help="HuggingFace model ID or local path",
     )
     parser.add_argument(
-        "--benchmarks", nargs="+", default=["gsm8k", "math500"],
-        choices=["gsm8k", "math500"],
+        "--benchmarks", nargs="+",
+        default=["gsm8k", "math500", "aime2026", "math_hard"],
+        choices=["gsm8k", "math500", "aime2026", "math_hard"],
         help="Benchmarks to evaluate on",
     )
     parser.add_argument(
