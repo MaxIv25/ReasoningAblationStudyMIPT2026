@@ -130,7 +130,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         train_dataset = splits["train"]
         eval_dataset = splits["eval"]
 
-    # SFT Config
     sft_args = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -143,7 +142,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         bf16=train_cfg.get("bf16", True),
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
-        max_seq_length=max_seq_len,
+        max_length=max_seq_len,  # TRL 1.x: was max_seq_length
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "steps"),
         save_steps=train_cfg.get("save_steps", 500),
@@ -156,17 +155,15 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # Logging: tensorboard (logs saved to output_dir/runs/)
         report_to="tensorboard",
         run_name=config.get("run_name", f"sft_{method}"),
-        # Prompt masking: loss only on assistant response
-        dataset_text_field=None,  # Use messages format
+        # Messages format auto-detected from "messages" column by TRL 1.x
     )
 
-    # Initialize trainer
     trainer = SFTTrainer(
         model=model,
         args=sft_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,  # TRL 1.x: was tokenizer
         peft_config=peft_config,
     )
 
