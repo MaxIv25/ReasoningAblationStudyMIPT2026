@@ -2,21 +2,21 @@
 # NOTE: This experiment requires a custom training loop (not standard SFTTrainer)
 # The KL loss is computed between student and teacher logits on each batch
 #
-# MEMORY: Teacher (35B MoE, bf16) ~70GB + Student (4B) ~12GB (LoRA) = ~82GB / 140GB
-# Full FT student (~48GB) + Teacher (~70GB) = 118GB → too tight, LoRA required.
-method: lora
+# MEMORY: Multi-GPU setup — teacher and student on SEPARATE GPUs.
+# GPU 0: Student (4B, Full FT) ~65GB
+# GPU 1: Teacher (35B MoE, bf16, inference only) ~70GB
+# Each fits on a single H200 (140GB).
+method: full_ft
 run_name: "exp1_3_kl_constraint"
 
 kl_constraint:
   enabled: true
   alpha: 0.3          # weight of KL loss: total = sft_loss + alpha * kl_loss
   temperature: 2.0    # temperature for KL computation
+  teacher_device: "cuda:1"   # GPU for teacher model (inference only)
+  student_device: "cuda:0"   # GPU for student model (training)
 
 training:
-  lora:
-    learning_rate: 2.0e-4
-    num_train_epochs: 3
-    r: 64
-    lora_alpha: 128
-    lora_dropout: 0.05
-    target_modules: "all-linear"
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2
