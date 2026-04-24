@@ -147,13 +147,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "steps"),
-        save_steps=train_cfg.get("save_steps", 500),
+        save_steps=train_cfg.get("save_steps", 250),  # Save before eval to avoid losing progress on OOM
         eval_strategy="steps",
         eval_steps=train_cfg.get("eval_steps", 500),
-        save_total_limit=3,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
+        save_total_limit=5,
         # Logging: tensorboard (logs saved to output_dir/runs/)
         report_to="tensorboard",
         run_name=config.get("run_name", f"sft_{method}"),
