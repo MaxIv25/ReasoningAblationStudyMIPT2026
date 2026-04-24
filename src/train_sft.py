@@ -134,6 +134,8 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         output_dir=output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 4),
+        per_device_eval_batch_size=1,  # Qwen3.5 vocab=248K → logits.float() is huge
+        eval_accumulation_steps=8,     # Accumulate eval preds to avoid OOM
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=lr,
         lr_scheduler_type="cosine",
