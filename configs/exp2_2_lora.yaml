@@ -5,7 +5,7 @@ run_name: "exp2_2_lora"
 training:
   lora:
     learning_rate: 2.0e-4
-    num_train_epochs: 3
+    num_train_epochs: 2
     r: 64
     lora_alpha: 128
     lora_dropout: 0.05

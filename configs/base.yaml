@@ -3,7 +3,7 @@
 # ============================================================
 
 model:
-  name: "Qwen/Qwen3.5-4B-Base"
+  name: "Qwen/Qwen3.5-0.8B-Base"
   # Если модель скачана в кастомную директорию, укажите путь:
   # name: "/path/to/local/Qwen3.5-4B-Base"
   max_seq_len: 8192       # Full R1 traces, no truncation for ablation quality
