@@ -154,6 +154,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         optim="adamw_torch_fused",
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
+        use_liger_kernel=True,  # Fused CE loss: avoids 30GB logits tensor (248K vocab × 16K seq)
         # Logging: tensorboard (logs saved to output_dir/runs/)
         report_to="tensorboard",
         run_name=config.get("run_name", f"sft_{method}"),
