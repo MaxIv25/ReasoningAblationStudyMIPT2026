@@ -8,6 +8,7 @@ accelerate
 math-verify
 tensorboard
 hf_transfer
+liger-kernel>=0.5    # Fused CE loss — critical for 248K vocab (avoids 30GB logits)
 pyyaml
 numpy
 pandas

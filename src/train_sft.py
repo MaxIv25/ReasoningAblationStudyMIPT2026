@@ -132,14 +132,15 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         output_dir=output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 4),
-        per_device_eval_batch_size=1,  # Qwen3.5 vocab=248K → logits.float() is huge
-        eval_accumulation_steps=8,     # Accumulate eval preds to avoid OOM
+        per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 4),
+        eval_accumulation_steps=4,
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=lr,
         lr_scheduler_type="cosine",
         warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
         weight_decay=train_cfg.get("weight_decay", 0.01),
         bf16=train_cfg.get("bf16", True),
+        tf32=True,  # TF32 for matmul on Hopper — free 5-10% speedup
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
@@ -150,8 +151,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         eval_strategy="steps",
         eval_steps=train_cfg.get("eval_steps", 500),
         save_total_limit=train_cfg.get("save_total_limit", 2),
+        save_only_model=True,  # Don't save optimizer states → 3× smaller checkpoints
         # Performance
         optim="adamw_torch_fused",
+        torch_compile=True,           # Graph compilation → 15-25% speedup (first step slow)
+        torch_compile_backend="inductor",
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
         use_liger_kernel=True,  # Fused CE loss: avoids 30GB logits tensor (248K vocab × 16K seq)
@@ -169,17 +173,13 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         peft_config=peft_config,
     )
 
-    # Check for existing checkpoints
-    import glob
-    checkpoints = glob.glob(os.path.join(output_dir, "checkpoint-*"))
-    resume_kwargs = {}
-    if checkpoints:
-        logger.info(f"Found {len(checkpoints)} checkpoints, resuming from latest...")
-        resume_kwargs["resume_from_checkpoint"] = True
+    # NOTE: save_only_model=True means no optimizer states are saved,
+    # so resume_from_checkpoint would start with fresh optimizer.
+    # For ablation study, restart from scratch if training fails.
 
     # Train
     logger.info("Starting training...")
-    train_result = trainer.train(**resume_kwargs)
+    train_result = trainer.train()
 
     # Save
     logger.info(f"Saving model to {output_dir}")
