@@ -6,7 +6,7 @@ model:
   name: "Qwen/Qwen3.5-0.8B-Base"
   # Если модель скачана в кастомную директорию, укажите путь:
   # name: "/path/to/local/Qwen3.5-4B-Base"
-  max_seq_len: 8192       # Full R1 traces, no truncation for ablation quality
+  max_seq_len: 16384      # Cover 95% of R1 traces (was 8192, truncating 25%)
   torch_dtype: "bfloat16"
 
 teacher:
@@ -14,8 +14,8 @@ teacher:
   # name: "/path/to/local/Qwen3.5-35B-A3B"
 
 training:
-  per_device_train_batch_size: 4    # was 2 — GPU util was only 60-70%
-  gradient_accumulation_steps: 4    # was 8 — effective batch still = 16
+  per_device_train_batch_size: 2    # reduced from 4 for 16K seq len
+  gradient_accumulation_steps: 8    # effective batch still = 16
   packing: true                     # pack short examples into one seq → ~2x speedup
   save_total_limit: 2               # was 5 — save disk space
   warmup_ratio: 0.05
@@ -58,8 +58,8 @@ data:
   eval_fraction: 0.05   # 5% held-out for eval loss
   
   # Фильтрация R1 трасс (из колонки `generations`)
-  # Верхний лимит по длине НЕ нужен: training обрезает до max_seq_len,
-  # а на H200 140GB влезает seq=8192 (Full FT ~65GB, LoRA ~12GB).
+  # С max_seq_len=16384 покрываем 95% данных (P95=14364 токенов).
+  # Оставшиеся ~5% (>16K) обрезаются — это сверхдлинные трассы.
   filter:
     min_trace_words: 20       # убрать слишком короткие/пустые
     require_think_tags: true  # только трассы с <think>...</think>
@@ -71,7 +71,7 @@ eval:
     - math500
     - aime2026
     - math_hard
-  max_new_tokens: 4096
+  max_new_tokens: 16384
   # Qwen3 best practices: для thinking mode НЕ использовать greedy!
   # "DO NOT use greedy decoding, as it can lead to performance degradation
   #  and endless repetitions."
