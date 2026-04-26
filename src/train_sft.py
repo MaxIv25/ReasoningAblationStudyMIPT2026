@@ -105,7 +105,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     model_kwargs = {
         "torch_dtype": getattr(torch, model_cfg.get("torch_dtype", "bfloat16")),
         "trust_remote_code": True,
-        "attn_implementation": "flash_attention_2",
+        "attn_implementation": "sdpa",  # PyTorch native, no extra package needed
     }
     
     logger.info("Loading model...")
