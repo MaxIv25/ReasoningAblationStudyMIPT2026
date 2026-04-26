@@ -19,8 +19,15 @@ set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-NGPU=$(nvidia-smi -L 2>/dev/null | wc -l)
-echo "Detected $NGPU GPU(s)"
+# Count GPUs: respect CUDA_VISIBLE_DEVICES if set
+if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+    # Count comma-separated GPU IDs
+    NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+else
+    NGPU=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
+
+echo "Using $NGPU GPU(s) (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all})"
 
 if [ "$NGPU" -gt 1 ]; then
     echo "Launching with torchrun (DDP, $NGPU GPUs)..."
