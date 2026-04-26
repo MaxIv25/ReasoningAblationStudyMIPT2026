@@ -108,6 +108,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         "attn_implementation": "sdpa",  # PyTorch native, no extra package needed
     }
     
+    # TF32 for matmul on Hopper — set via new API (legacy API conflicts with torch.compile)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
     logger.info("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
@@ -140,7 +144,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
         weight_decay=train_cfg.get("weight_decay", 0.01),
         bf16=train_cfg.get("bf16", True),
-        tf32=True,  # TF32 for matmul on Hopper — free 5-10% speedup
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
