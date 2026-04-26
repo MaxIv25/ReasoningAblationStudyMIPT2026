@@ -14,8 +14,8 @@ teacher:
   # name: "/path/to/local/Qwen3.5-35B-A3B"
 
 training:
-  per_device_train_batch_size: 2    # reduced from 4 for 16K seq len
-  gradient_accumulation_steps: 8    # effective batch still = 16
+  per_device_train_batch_size: 4    # SDPA allows larger batch even at 16K
+  gradient_accumulation_steps: 4    # effective batch = 16
   packing: true                     # pack short examples into one seq → ~2x speedup
   save_total_limit: 2               # was 5 — save disk space
   warmup_ratio: 0.05
