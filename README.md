@@ -1,64 +1,85 @@
 # Reasoning Ablation Study — MIPT 2026
 
-**SFT Ablation Study для обучения reasoning LLM**
+**Ablation study методов SFT и GRPO для обучения LLM рассуждению**
 
-Проект по курсу оптимизации: систематическое исследование влияния различных компонентов SFT-этапа на качество reasoning в LLM.
+Проект исследует полный пайплайн обучения reasoning LLM (SFT → GRPO → RS+SFT → final GRPO), воспроизводя подход DeepSeek-R1 на модели Qwen3.5-0.8B-Base.
 
 ## Модель и данные
 
 | Компонент | Описание |
 |-----------|----------|
-| **Ученик** | Qwen3.5-4B-Base (4B dense, ctx 262K) |
-| **Учитель** | Qwen3.5-35B-A3B (35B total, 3B activated MoE) |
-| **Данные** | OpenR1-Math-220K (трассы DeepSeek-R1) |
-| **Бенчмарки** | GSM8K test (1.3K) + MATH-500 |
-| **GPU** | 1× H200 140GB |
+| **Модель** | Qwen3.5-0.8B-Base |
+| **Данные** | OpenR1-Math-220K (20K filtered, DeepSeek-R1 traces) |
+| **Бенчмарки** | GSM8K test (1.3K), MATH-500 |
+| **Фреймворки** | TRL, PEFT, vLLM, math-verify |
 
-## Фазы эксперимента
+## План экспериментов
 
-| Фаза | Что исследуем | Эксперименты |
-|------|--------------|-------------|
-| **0** | Baseline | Eval raw Qwen3.5-4B-Base |
-| **1** | Источник данных | R1 traces vs Qwen traces vs KL-constraint |
-| **2** | Метод обучения | Full FT vs LoRA vs DoRA vs PiSSA |
-| **3** | Curriculum и данные | Correct/incorrect, easy→hard, prompt masking |
-| **4** | Оптимизатор | AdamW vs constant LR vs SGD vs AdaFactor |
+### Этап 1: SFT Ablation
+
+| # | Эксперимент | Гипотеза | Статус |
+|---|-------------|----------|--------|
+| 1 | Full FT vs LoRA vs DoRA vs PiSSA | PEFT неявно ограничивает KL к исходной модели за счёт низкого ранга. Full FT обновляет все веса → ниже loss, но больший дрифт от π₀ | 🔄 Full FT и LoRA запущены |
+| 2 | Curriculum (random vs easy→hard) | Упорядочивание по сложности ≈ lr warm-up: начинаем с low-variance градиентов | ⏳ |
+| 3 | Prompt masking vs loss на промпте | Loss на промпте может улучшить связь "условие → решение", но разбавит сигнал | ⏳ |
+
+### Этап 2: GRPO Ablation
+
+| # | Эксперимент | Суть |
+|---|-------------|------|
+| 4 | Vanilla GRPO | Baseline: REINFORCE + group baseline + IS + clipping + KL |
+| 5 | Dr. GRPO | Убираем bias: Â = r - r̄ (без деления на σ) |
+| 6 | DAPO | 4 трюка: asymmetric clip, dynamic sampling, token-level norm, overlong penalty |
+| 7 | DPO-inspired baseline | Объединение аналитического результата DPO с итеративным подходом GRPO |
+
+### Этап 3: Полный пайплайн
+
+```
+SFT (лучший метод) → GRPO (лучший вариант) → Rejection Sampling + SFT → Final GRPO
+```
+
+### Дополнительно (если позволит время)
+
+- PRIME — token-level credit assignment
+- Online/Offline DPO
+- KL-constraint distillation (SFT + KL к учителю)
 
 ## Структура
 
 ```
-├── configs/          # YAML конфиги экспериментов
-├── src/              # Общие утилиты
-│   ├── evaluate.py   # Eval на GSM8K/MATH-500 (vLLM)
-│   ├── data_utils.py # Загрузка и подготовка данных
-│   ├── train_sft.py  # SFT training (TRL + PEFT)
-│   └── generate_traces.py  # Генерация трасс учителем
-├── sft/
-│   ├── exp0_baseline/    # Phase 0
-│   ├── exp1_data/        # Phase 1
-│   ├── exp2_method/      # Phase 2
-│   ├── exp3_curriculum/  # Phase 3
-│   └── exp4_optimizer/   # Phase 4
-├── analysis/         # Графики и сравнения
-└── docs/             # Документация
+├── configs/              # YAML конфиги экспериментов
+│   ├── base.yaml         # Базовый конфиг (наследуется)
+│   ├── exp1_*.yaml       # Фаза данных
+│   ├── exp2_*.yaml       # Фаза методов (Full FT / LoRA / DoRA / PiSSA)
+│   └── exp3_*.yaml       # Curriculum
+├── src/
+│   ├── train_sft.py      # SFT training (TRL + PEFT)
+│   ├── evaluate.py       # Eval через vLLM (GSM8K, MATH-500)
+│   ├── data_utils.py     # Загрузка, фильтрация, curriculum sorting
+│   ├── generate_traces.py # Генерация traces учителем
+│   └── utils.py          # Конфиги, логирование, extract_boxed
+├── sft/                  # Скрипты запуска по фазам
+├── logs/                 # Логи текущих экспериментов
+├── analysis/             # Сравнение результатов
+└── docs/                 # Документация
 ```
 
 ## Quick Start
 
 ```bash
-# 1. Установка зависимостей
+# Установка
 pip install -r requirements.txt
 
-# 2. Phase 0: Baseline
-python sft/exp0_baseline/run_baseline.py --model Qwen/Qwen3.5-4B-Base
-
-# 3. Подготовка данных
+# Подготовка данных
 python src/data_utils.py --config configs/base.yaml --output data/openr1_20k
 
-# 4. SFT Training (пример: LoRA)
-python src/train_sft.py --config configs/exp2_2_lora.yaml --data-dir data/openr1_20k --method lora
+# SFT Training (пример: LoRA)
+CUDA_VISIBLE_DEVICES=0 python src/train_sft.py \
+    --config configs/exp2_2_lora.yaml \
+    --data-dir data/openr1_20k \
+    --method lora
 
-# 5. Eval после обучения
+# Eval
 python src/evaluate.py --model outputs/exp2_lora --output results/exp2_lora.json
 ```
 
@@ -66,10 +87,21 @@ python src/evaluate.py --model outputs/exp2_lora --output results/exp2_lora.json
 
 | Метрика | Описание |
 |---------|----------|
-| **Accuracy (pass@1)** | Greedy decode → extract `\boxed{}` → math_verify |
-| **Format compliance** | % ответов с корректным `\boxed{}` |
-| **Avg response length** | Средняя длина ответа в словах |
-| **Train/Eval loss** | Логируется через TensorBoard |
+| **Accuracy (pass@1)** | Sampling t=0.6, top_p=0.95 → extract `\boxed{}` → math_verify |
+| **Format compliance** | % ответов с корректным `<think>...</think> \boxed{...}` |
+| **Eval loss / token accuracy** | TensorBoard |
+| **Compute efficiency** | Время обучения, пиковый VRAM |
+
+## Текущий прогресс
+
+- [x] Инфраструктура: SFT pipeline, eval pipeline, data pipeline
+- [x] Конфиги для всех SFT экспериментов
+- [/] Exp 1: Full FT — ~50%, eval_loss=0.477, token_acc=84.6%
+- [/] Exp 2: LoRA r=64 — ~57%
+- [ ] DoRA, PiSSA
+- [ ] Curriculum, prompt masking
+- [ ] GRPO реализация
+- [ ] Полный пайплайн
 
 ## Авторы
 
