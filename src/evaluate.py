@@ -157,7 +157,7 @@ def verify_answer(predicted: str | None, ground_truth: str) -> bool:
 def evaluate_model(
     model_path: str,
     benchmarks: list[str] = None,
-    max_new_tokens: int = 4096,
+    max_new_tokens: int = 8192,
     temperature: float = 0.6,
     top_p: float = 0.95,
     top_k: int = 20,
@@ -389,7 +389,7 @@ def main():
         help="Benchmarks to evaluate on",
     )
     parser.add_argument(
-        "--max-new-tokens", type=int, default=4096,
+        "--max-new-tokens", type=int, default=8192,
         help="Max tokens to generate",
     )
     parser.add_argument(
