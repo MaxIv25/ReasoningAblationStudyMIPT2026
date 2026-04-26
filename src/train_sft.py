@@ -100,15 +100,12 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         tokenizer.pad_token = tokenizer.eos_token
 
     # Load model
+    # NOTE: 0.8B model fits entirely on one GPU, no need for device_map.
+    # device_map="auto" was causing excessive VRAM usage for PEFT (~130GB).
     model_kwargs = {
         "torch_dtype": getattr(torch, model_cfg.get("torch_dtype", "bfloat16")),
-        "device_map": "auto",
         "trust_remote_code": True,
     }
-
-    # For Full FT, don't use device_map (SFTTrainer handles it)
-    if method == "full_ft":
-        model_kwargs.pop("device_map")
     
     logger.info("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
@@ -145,16 +142,20 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
+        packing=train_cfg.get("packing", True),  # Pack multiple examples into one seq → ~2x speedup
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "steps"),
-        save_steps=train_cfg.get("save_steps", 250),  # Save before eval to avoid losing progress on OOM
+        save_steps=train_cfg.get("save_steps", 250),
         eval_strategy="steps",
         eval_steps=train_cfg.get("eval_steps", 500),
-        save_total_limit=5,
+        save_total_limit=train_cfg.get("save_total_limit", 2),
+        # Performance
+        optim="adamw_torch_fused",
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
         # Logging: tensorboard (logs saved to output_dir/runs/)
         report_to="tensorboard",
         run_name=config.get("run_name", f"sft_{method}"),
-        # Messages format auto-detected from "messages" column by TRL 1.x
     )
 
     trainer = SFTTrainer(

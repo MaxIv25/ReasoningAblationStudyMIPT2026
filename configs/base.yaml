@@ -14,8 +14,10 @@ teacher:
   # name: "/path/to/local/Qwen3.5-35B-A3B"
 
 training:
-  per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8   # effective batch = 16
+  per_device_train_batch_size: 4    # was 2 — GPU util was only 60-70%
+  gradient_accumulation_steps: 4    # was 8 — effective batch still = 16
+  packing: true                     # pack short examples into one seq → ~2x speedup
+  save_total_limit: 2               # was 5 — save disk space
   warmup_ratio: 0.05
   weight_decay: 0.01
   bf16: true
