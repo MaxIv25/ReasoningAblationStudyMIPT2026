@@ -1,6 +1,7 @@
 # Outputs and checkpoints
 outputs/
 data/
+logs/*.log
 
 # Results (keep structure but not large files)
 **/results/*.json
