@@ -105,7 +105,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     model_kwargs = {
         "torch_dtype": getattr(torch, model_cfg.get("torch_dtype", "bfloat16")),
         "trust_remote_code": True,
-        "attn_implementation": "sdpa",  # PyTorch native, no extra package needed
+        # IMPORTANT: packing=True requires flash_attention_2 for proper document masks.
+        # With SDPA, TRL creates a full 4D mask (16K×16K) which forces O(n²) fallback.
+        # Use "sdpa" (fast) when packing=False, "flash_attention_2" when packing=True.
+        "attn_implementation": "sdpa",
     }
     
     # TF32 for matmul on Hopper — set via new API (legacy API conflicts with torch.compile)
@@ -147,7 +150,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
-        packing=train_cfg.get("packing", True),  # Pack multiple examples into one seq → ~2x speedup
+        # CRITICAL: packing=True + SDPA creates 16K×16K attention mask → O(n²) fallback, 200+ sec/step!
+        # packing=False uses dynamic padding + SDPA flash path → 10-20× faster per step.
+        # Re-enable packing only with attn_implementation="flash_attention_2".
+        packing=train_cfg.get("packing", False),
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "steps"),
         save_steps=train_cfg.get("save_steps", 250),
