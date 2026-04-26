@@ -166,6 +166,7 @@ def evaluate_model(
     use_chat_template: bool = False,
     tensor_parallel_size: int = 1,
     gpu_memory_utilization: float = 0.9,
+    lora_path: str = None,
 ) -> dict:
     """
     Evaluate a model on GSM8K and/or MATH-500.
@@ -215,15 +216,31 @@ def evaluate_model(
 
     # Load model with vLLM
     logger.info(f"Loading model: {model_path}")
+    if lora_path:
+        logger.info(f"LoRA adapter: {lora_path}")
+
+    # Build vLLM kwargs
+    llm_kwargs = dict(
+        model=model_path,
+        tensor_parallel_size=tensor_parallel_size,
+        gpu_memory_utilization=gpu_memory_utilization,
+        dtype="bfloat16",
+        trust_remote_code=True,
+        max_model_len=max_new_tokens + 4096,  # input (up to 4K) + output
+    )
+    if lora_path:
+        llm_kwargs["enable_lora"] = True
+        llm_kwargs["max_lora_rank"] = 64
+
     with Timer("Model loading"):
-        llm = LLM(
-            model=model_path,
-            tensor_parallel_size=tensor_parallel_size,
-            gpu_memory_utilization=gpu_memory_utilization,
-            dtype="bfloat16",
-            trust_remote_code=True,
-            max_model_len=max_new_tokens + 4096,  # input (up to 4K) + output
-        )
+        llm = LLM(**llm_kwargs)
+
+    # Prepare LoRA request if needed
+    lora_request = None
+    if lora_path:
+        from vllm.lora.request import LoRARequest
+        lora_request = LoRARequest("lora_adapter", 1, lora_path)
+        logger.info(f"LoRA adapter loaded from {lora_path}")
 
     # Qwen3 best practices: t=0.6, top_p=0.95, top_k=20 for thinking mode.
     # DO NOT use greedy (t=0) — causes performance degradation and repetitions.
@@ -265,7 +282,10 @@ def evaluate_model(
 
         # Generate
         with Timer(f"{bench_name} generation"):
-            outputs = llm.generate(prompts, sampling_params)
+            gen_kwargs = dict(prompts=prompts, sampling_params=sampling_params)
+            if lora_request:
+                gen_kwargs["lora_request"] = lora_request
+            outputs = llm.generate(**gen_kwargs)
 
         # Evaluate
         correct = 0
@@ -409,6 +429,11 @@ def main():
         help="Use chat template with <think> prefix (for fine-tuned models). "
              "Don't use for base model baseline.",
     )
+    parser.add_argument(
+        "--lora-path", type=str, default=None,
+        help="Path to LoRA adapter directory (loads base model + adapter on-the-fly). "
+             "Use this instead of --model for PEFT checkpoints to avoid config issues.",
+    )
 
     args = parser.parse_args()
 
@@ -423,6 +448,7 @@ def main():
         use_chat_template=args.chat_template,
         tensor_parallel_size=args.tp,
         gpu_memory_utilization=args.gpu_mem,
+        lora_path=args.lora_path,
     )
 
     # Add model info
