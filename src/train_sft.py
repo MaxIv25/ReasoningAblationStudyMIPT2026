@@ -167,7 +167,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     )
 
     # Check for existing checkpoints
-    import os
     import glob
     checkpoints = glob.glob(os.path.join(output_dir, "checkpoint-*"))
     resume_kwargs = {}
