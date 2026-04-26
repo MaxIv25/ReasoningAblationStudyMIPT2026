@@ -157,8 +157,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         save_only_model=True,  # Don't save optimizer states → 3× smaller checkpoints
         # Performance
         optim="adamw_torch_fused",
-        torch_compile=True,           # Graph compilation → 15-25% speedup (first step slow)
-        torch_compile_backend="inductor",
+        # NOTE: torch_compile removed — compilation takes 20+ min with DDP+grad_checkpointing+16K
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
         use_liger_kernel=True,  # Fused CE loss: avoids 30GB logits tensor (248K vocab × 16K seq)
