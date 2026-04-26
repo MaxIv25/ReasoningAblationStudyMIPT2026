@@ -166,9 +166,18 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         peft_config=peft_config,
     )
 
+    # Check for existing checkpoints
+    import os
+    import glob
+    checkpoints = glob.glob(os.path.join(output_dir, "checkpoint-*"))
+    resume_kwargs = {}
+    if checkpoints:
+        logger.info(f"Found {len(checkpoints)} checkpoints, resuming from latest...")
+        resume_kwargs["resume_from_checkpoint"] = True
+
     # Train
     logger.info("Starting training...")
-    train_result = trainer.train()
+    train_result = trainer.train(**resume_kwargs)
 
     # Save
     logger.info(f"Saving model to {output_dir}")
