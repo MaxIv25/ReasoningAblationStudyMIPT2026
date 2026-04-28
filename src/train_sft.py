@@ -27,6 +27,21 @@ from src.utils import load_config, setup_logging, get_gpu_memory_info
 logger = setup_logging("train_sft")
 
 
+class CurriculumSFTTrainer(SFTTrainer):
+    """
+    Custom SFTTrainer that uses a SequentialSampler instead of RandomSampler
+    for the training dataset if curriculum learning is enabled.
+    This ensures that data prepared and sorted by difficulty (easy-to-hard)
+    is actually fed to the model in that exact order.
+    """
+    def _get_train_sampler(self) -> torch.utils.data.Sampler | None:
+        if self.train_dataset is None or not len(self.train_dataset):
+            return None
+        from torch.utils.data import SequentialSampler
+        return SequentialSampler(self.train_dataset)
+
+
+
 def get_peft_config(config: dict) -> LoraConfig | None:
     """
     Build PEFT config based on training method.
@@ -191,7 +206,14 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         run_name=config.get("run_name", f"sft_{method}"),
     )
 
-    trainer = SFTTrainer(
+    use_curriculum = train_cfg.get("curriculum_learning", False)
+    if use_curriculum:
+        logger.info("Using CurriculumSFTTrainer (SequentialSampler) for sorted data training")
+        trainer_cls = CurriculumSFTTrainer
+    else:
+        trainer_cls = SFTTrainer
+
+    trainer = trainer_cls(
         model=model,
         args=sft_args,
         train_dataset=train_dataset,
