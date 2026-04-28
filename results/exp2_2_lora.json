@@ -1,0 +1,616 @@
+{
+  "gsm8k": {
+    "accuracy": 64.82,
+    "metric": "pass@1",
+    "correct": 855,
+    "total": 1319,
+    "format_compliance": 93.56,
+    "avg_response_length": 1490.3,
+    "details": [
+      {
+        "question": "Janet’s ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for ...",
+        "ground_truth": "18",
+        "predicted": "26",
+        "correct": false,
+        "response_length": 338
+      },
+      {
+        "question": "A robe takes 2 bolts of blue fiber and half that much white fiber.  How many bolts in total does it ...",
+        "ground_truth": "3",
+        "predicted": "3",
+        "correct": true,
+        "response_length": 151
+      },
+      {
+        "question": "Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repai...",
+        "ground_truth": "70000",
+        "predicted": "120000",
+        "correct": false,
+        "response_length": 336
+      },
+      {
+        "question": "James decides to run 3 sprints 3 times a week.  He runs 60 meters each sprint.  How many total meter...",
+        "ground_truth": "540",
+        "predicted": "540",
+        "correct": true,
+        "response_length": 142
+      },
+      {
+        "question": "Every day, Wendi feeds each of her chickens three cups of mixed chicken feed, containing seeds, meal...",
+        "ground_truth": "20",
+        "predicted": "20",
+        "correct": true,
+        "response_length": 419
+      },
+      {
+        "question": "Kylar went to the store to buy glasses for his new apartment. One glass costs $5, but every second g...",
+        "ground_truth": "64",
+        "predicted": null,
+        "correct": false,
+        "response_length": 2523
+      },
+      {
+        "question": "Toulouse has twice as many sheep as Charleston. Charleston has 4 times as many sheep as Seattle. How...",
+        "ground_truth": "260",
+        "predicted": "260",
+        "correct": true,
+        "response_length": 232
+      },
+      {
+        "question": "Carla is downloading a 200 GB file. Normally she can download 2 GB/minute, but 40% of the way throug...",
+        "ground_truth": "160",
+        "predicted": "100",
+        "correct": false,
+        "response_length": 1339
+      },
+      {
+        "question": "John drives for 3 hours at a speed of 60 mph and then turns around because he realizes he forgot som...",
+        "ground_truth": "45",
+        "predicted": "135",
+        "correct": false,
+        "response_length": 715
+      },
+      {
+        "question": "Eliza's rate per hour for the first 40 hours she works each week is $10. She also receives an overti...",
+        "ground_truth": "460",
+        "predicted": "460",
+        "correct": true,
+        "response_length": 654
+      },
+      {
+        "question": "A new program had 60 downloads in the first month. The number of downloads in the second month was t...",
+        "ground_truth": "366",
+        "predicted": "366",
+        "correct": true,
+        "response_length": 163
+      },
+      {
+        "question": "Toula went to the bakery and bought various types of pastries. She bought 3 dozen donuts which cost ...",
+        "ground_truth": "694",
+        "predicted": "694",
+        "correct": true,
+        "response_length": 174
+      },
+      {
+        "question": "Carlos is planting a lemon tree. The tree will cost $90 to plant. Each year it will grow 7 lemons, w...",
+        "ground_truth": "13",
+        "predicted": "1",
+        "correct": false,
+        "response_length": 489
+      },
+      {
+        "question": "Melanie is a door-to-door saleswoman. She sold a third of her vacuum cleaners at the green house, 2 ...",
+        "ground_truth": "18",
+        "predicted": "21",
+        "correct": false,
+        "response_length": 305
+      },
+      {
+        "question": "In a dance class of 20 students, 20% enrolled in contemporary dance, 25% of the remaining enrolled i...",
+        "ground_truth": "60",
+        "predicted": "60\\%",
+        "correct": true,
+        "response_length": 437
+      },
+      {
+        "question": "A merchant wants to make a choice of purchase between 2 purchase plans: jewelry worth $5,000 or elec...",
+        "ground_truth": "125",
+        "predicted": "8000",
+        "correct": false,
+        "response_length": 2161
+      },
+      {
+        "question": "Two trains leave San Rafael at the same time. They begin traveling westward, both traveling for 80 m...",
+        "ground_truth": "230",
+        "predicted": "230",
+        "correct": true,
+        "response_length": 535
+      },
+      {
+        "question": "Jill gets paid $20 per hour to teach and $30 to be a cheerleading coach. If she works 50 weeks a yea...",
+        "ground_truth": "57500",
+        "predicted": "57500",
+        "correct": true,
+        "response_length": 181
+      },
+      {
+        "question": "Claire makes a 3 egg omelet every morning for breakfast.  How many dozens of eggs will she eat in 4 ...",
+        "ground_truth": "7",
+        "predicted": "5",
+        "correct": false,
+        "response_length": 295
+      },
+      {
+        "question": "Marissa is hiking a 12-mile trail. She took 1 hour to walk the first 4 miles, then another hour to w...",
+        "ground_truth": "6",
+        "predicted": "4",
+        "correct": false,
+        "response_length": 471
+      }
+    ]
+  },
+  "math500": {
+    "accuracy": 45.8,
+    "metric": "pass@1",
+    "correct": 229,
+    "total": 500,
+    "format_compliance": 72.8,
+    "avg_response_length": 3134.9,
+    "details": [
+      {
+        "question": "Convert the point $(0,3)$ in rectangular coordinates to polar coordinates.  Enter your answer in the...",
+        "ground_truth": "\\left( 3, \\frac{\\pi}{2} \\right)",
+        "predicted": "(3,\\frac{\\pi}{2})",
+        "correct": false,
+        "response_length": 193
+      },
+      {
+        "question": "Define\n\\[p = \\sum_{k = 1}^\\infty \\frac{1}{k^2} \\quad \\text{and} \\quad q = \\sum_{k = 1}^\\infty \\frac{...",
+        "ground_truth": "p - q",
+        "predicted": null,
+        "correct": false,
+        "response_length": 8477
+      },
+      {
+        "question": "If $f(x) = \\frac{3x-2}{x-2}$, what is the value of $f(-2) +f(-1)+f(0)$? Express your answer as a com...",
+        "ground_truth": "\\frac{14}{3}",
+        "predicted": "\\frac{14}{3}",
+        "correct": true,
+        "response_length": 101
+      },
+      {
+        "question": "How many positive whole-number divisors does 196 have?...",
+        "ground_truth": "9",
+        "predicted": "9",
+        "correct": true,
+        "response_length": 152
+      },
+      {
+        "question": "The results of a cross-country team's training run are graphed below. Which student has the greatest...",
+        "ground_truth": "\\text{Evelyn}",
+        "predicted": null,
+        "correct": false,
+        "response_length": 12001
+      },
+      {
+        "question": "A regular hexagon can be divided into six equilateral triangles. If the perimeter of one of the tria...",
+        "ground_truth": "42",
+        "predicted": "42",
+        "correct": true,
+        "response_length": 243
+      },
+      {
+        "question": "What is the smallest positive perfect cube that can be written as the sum of three consecutive integ...",
+        "ground_truth": "27",
+        "predicted": "27",
+        "correct": true,
+        "response_length": 1034
+      },
+      {
+        "question": "The set of points $(x,y,z)$ that satisfy\n\\[2x = 3y = -z\\]is a line.\n\nThe set of points $(x,y,z)$ tha...",
+        "ground_truth": "90^\\circ",
+        "predicted": "72.720573789",
+        "correct": false,
+        "response_length": 4599
+      },
+      {
+        "question": "What is the distance, in units, between the points $(2, -6)$ and $(-4, 3)$? Express your answer in s...",
+        "ground_truth": "3\\sqrt{13}",
+        "predicted": "3\\sqrt{13}",
+        "correct": true,
+        "response_length": 198
+      },
+      {
+        "question": "The expression $2\\cdot 3 \\cdot 4\\cdot 5+1$ is equal to 121, since multiplication is carried out befo...",
+        "ground_truth": "4",
+        "predicted": null,
+        "correct": false,
+        "response_length": 7792
+      },
+      {
+        "question": "What is the least positive integer multiple of 30 that can be written with only the digits 0 and 2?...",
+        "ground_truth": "2220",
+        "predicted": null,
+        "correct": false,
+        "response_length": 7887
+      },
+      {
+        "question": "Let $p(x)$ be a polynomial of degree 5 such that\n\\[p(n) = \\frac{n}{n^2 - 1}\\]for $n = 2,$ 3, 4, $\\do...",
+        "ground_truth": "\\frac{3}{56}",
+        "predicted": null,
+        "correct": false,
+        "response_length": 6525
+      },
+      {
+        "question": "The proper divisors of 12 are 1, 2, 3, 4 and 6. A proper divisor of an integer $N$ is a positive div...",
+        "ground_truth": "284",
+        "predicted": "",
+        "correct": false,
+        "response_length": 10579
+      },
+      {
+        "question": "The volume of the cylinder shown is $45\\pi$ cubic cm. What is the height in centimeters of the cylin...",
+        "ground_truth": "5",
+        "predicted": null,
+        "correct": false,
+        "response_length": 10473
+      },
+      {
+        "question": "Suppose $\\sin D = 0.7$ in the diagram below. What is $DE$? [asy]\npair D,E,F;\nF = (0,0);\nD = (sqrt(51...",
+        "ground_truth": "\\sqrt{51}",
+        "predicted": "10",
+        "correct": false,
+        "response_length": 9494
+      },
+      {
+        "question": "Let $z = 2 + \\sqrt{2} - (3 + 3 \\sqrt{2})i$, and let $c = 2 - 3i$.  Let $w$ be the result when $z$ is...",
+        "ground_truth": "6 - 5i",
+        "predicted": "6 - 5i",
+        "correct": true,
+        "response_length": 700
+      },
+      {
+        "question": "Compute: $1-2+3-4+5- \\dots +99-100$....",
+        "ground_truth": "-50",
+        "predicted": "-50",
+        "correct": true,
+        "response_length": 354
+      },
+      {
+        "question": "Below is the graph of $y = a \\sin (bx + c) + d$ for some positive constants $a,$ $b,$ $c,$ and $d.$ ...",
+        "ground_truth": "\\pi",
+        "predicted": null,
+        "correct": false,
+        "response_length": 13159
+      },
+      {
+        "question": "$\\overline{BC}$ is parallel to the segment through $A$, and $AB = BC$. What is the number of degrees...",
+        "ground_truth": "28",
+        "predicted": null,
+        "correct": false,
+        "response_length": 12287
+      },
+      {
+        "question": "Let $a$ be a positive real number such that all the roots of\n\\[x^3 + ax^2 + ax + 1 = 0\\]are real.  F...",
+        "ground_truth": "3",
+        "predicted": "3",
+        "correct": true,
+        "response_length": 1138
+      }
+    ]
+  },
+  "aime2026": {
+    "accuracy": 0.0,
+    "metric": "pass@1",
+    "correct": 0,
+    "total": 30,
+    "format_compliance": 26.67,
+    "avg_response_length": 7681.5,
+    "details": [
+      {
+        "question": "Patrick started walking at a constant rate along a straight road from school to the park. One hour a...",
+        "ground_truth": "277",
+        "predicted": null,
+        "correct": false,
+        "response_length": 4926
+      },
+      {
+        "question": "Find the number of positive integer palindromes written in base $10$ with no zero digits, and whose ...",
+        "ground_truth": "62",
+        "predicted": "0",
+        "correct": false,
+        "response_length": 3243
+      },
+      {
+        "question": "A hemisphere with radius $200$ sits on top of a horizontal circular disk with radius $200,$ and the ...",
+        "ground_truth": "79",
+        "predicted": "40001",
+        "correct": false,
+        "response_length": 10203
+      },
+      {
+        "question": "Find the number of integers less than or equal to 100 that are equal to $a+b+ab$ for some choice of ...",
+        "ground_truth": "70",
+        "predicted": null,
+        "correct": false,
+        "response_length": 5917
+      },
+      {
+        "question": "A plane contains points $A$ and $B$ with $AB = 1$. Point $A$ is rotated in the plane counterclockwis...",
+        "ground_truth": "65",
+        "predicted": null,
+        "correct": false,
+        "response_length": 11368
+      },
+      {
+        "question": "A real number $x$ satisfies $\\sqrt[20]{x^{\\log_{2026}x}}=26x$. What is the number of positive diviso...",
+        "ground_truth": "441",
+        "predicted": "1",
+        "correct": false,
+        "response_length": 7160
+      },
+      {
+        "question": "\nFind the number of functions $\\pi$ mapping the set $A =\\{1,2,3,4,5,6\\}$ onto $A$ such that for ever...",
+        "ground_truth": "396",
+        "predicted": "1",
+        "correct": false,
+        "response_length": 823
+      },
+      {
+        "question": "Let $N$ be the number of positive integer divisors of $17017^{17}$ that leave a remainder of $5$ whe...",
+        "ground_truth": "244",
+        "predicted": "0",
+        "correct": false,
+        "response_length": 2848
+      },
+      {
+        "question": "Joanne has a blank fair six-sided die and six stickers each displaying a different integer from 1 to...",
+        "ground_truth": "29",
+        "predicted": null,
+        "correct": false,
+        "response_length": 13786
+      },
+      {
+        "question": "Let $\\triangle ABC$ have side lengths $AB = 13, BC = 14,$ and $CA = 15.$ Triangle $\\triangle A'B'C'$...",
+        "ground_truth": "156",
+        "predicted": null,
+        "correct": false,
+        "response_length": 10798
+      },
+      {
+        "question": "The integers from $1$ to $64$ are placed in some order into an $8 \\times 8$ grid of cells with one n...",
+        "ground_truth": "896",
+        "predicted": null,
+        "correct": false,
+        "response_length": 5660
+      },
+      {
+        "question": "Triangle $\\triangle ABC$ lies in plane $\\mathcal P$ with $AB = 6, AC = 4,$ and $\\angle BAC = 90^\\cir...",
+        "ground_truth": "161",
+        "predicted": null,
+        "correct": false,
+        "response_length": 12058
+      },
+      {
+        "question": "For each positive integer $r$ less than $502,$ define\n\\[\nS_r=\\sum_{m\\ge 0}\\dbinom{10000}{502n+r},\n\\]...",
+        "ground_truth": "39",
+        "predicted": null,
+        "correct": false,
+        "response_length": 5158
+      },
+      {
+        "question": "In an equiangular pentagon, the sum of the squares of the side lengths equals $308,$ and the sum of ...",
+        "ground_truth": "681",
+        "predicted": null,
+        "correct": false,
+        "response_length": 11494
+      },
+      {
+        "question": "Let $a, b,$ and $n$ be positive integers with both $a$ and $b$ greater than or equal to $2$ and less...",
+        "ground_truth": "83",
+        "predicted": null,
+        "correct": false,
+        "response_length": 5576
+      },
+      {
+        "question": "Find the sum of the $10$th terms of all arithmetic sequences of integers that have first term equal ...",
+        "ground_truth": "178",
+        "predicted": null,
+        "correct": false,
+        "response_length": 1714
+      },
+      {
+        "question": "The figure below shows a grid of $10$ squares in a row. Each square has a diagonal connecting its lo...",
+        "ground_truth": "243",
+        "predicted": null,
+        "correct": false,
+        "response_length": 4150
+      },
+      {
+        "question": "Let $ABCDE$ be a nonconvex pentagon with internal angles $\\angle A = \\angle E = 90^\\circ$ and $\\angl...",
+        "ground_truth": "503",
+        "predicted": null,
+        "correct": false,
+        "response_length": 10052
+      },
+      {
+        "question": "For each positive integer $n$ let $f(n)$ be the value of the base-ten numeral $n$ viewed in base $b$...",
+        "ground_truth": "279",
+        "predicted": "999",
+        "correct": false,
+        "response_length": 5785
+      },
+      {
+        "question": "An urn contains $n$ marbles. Each marble is either red or blue, and there are at least $7$ marbles o...",
+        "ground_truth": "190",
+        "predicted": null,
+        "correct": false,
+        "response_length": 7844
+      }
+    ]
+  },
+  "math_hard": {
+    "accuracy": 19.94,
+    "metric": "pass@1",
+    "correct": 264,
+    "total": 1324,
+    "format_compliance": 54.83,
+    "avg_response_length": 4974.1,
+    "details": [
+      {
+        "question": "How many square units are in the region satisfying the inequalities $y \\ge |x|$ and $y \\le -|x|+3$? ...",
+        "ground_truth": "4.5",
+        "predicted": "4.5",
+        "correct": true,
+        "response_length": 1959
+      },
+      {
+        "question": "When Lauren was born on January 1, 1990, her grandparents put $\\$1000$ in a savings account in her n...",
+        "ground_truth": "1160",
+        "predicted": "1218",
+        "correct": false,
+        "response_length": 2632
+      },
+      {
+        "question": "Chris labels every lattice point in the coordinate plane with the square of the distance from the po...",
+        "ground_truth": "12",
+        "predicted": null,
+        "correct": false,
+        "response_length": 10509
+      },
+      {
+        "question": "An airplane climbs 100 feet during the first second after takeoff.  In each succeeding second it cli...",
+        "ground_truth": "15",
+        "predicted": "119",
+        "correct": false,
+        "response_length": 170
+      },
+      {
+        "question": "Define $f(x)=\\frac{1+x}{1-x}$ and $g(x)=\\frac{-2}{x+1}$. Find the value of \\[g(f(g(f(\\dotsb g(f(12))...",
+        "ground_truth": "4",
+        "predicted": null,
+        "correct": false,
+        "response_length": 4199
+      },
+      {
+        "question": "Given that the point $(8,8)$ is on the graph of $y=\\frac 14f\\left(\\frac 12x\\right)$, there is one po...",
+        "ground_truth": "36",
+        "predicted": "36",
+        "correct": true,
+        "response_length": 492
+      },
+      {
+        "question": "Bob can travel $m$ miles in $h$ hours on his bicycle. At this rate, how many hours would it take him...",
+        "ground_truth": "\\frac{h^2}{m}",
+        "predicted": "\\frac{h^{2}}{m}",
+        "correct": false,
+        "response_length": 159
+      },
+      {
+        "question": "Given that the point $(4,7)$ is on the graph of $y=3f\\left(2x\\right)+1$, there is one point that mus...",
+        "ground_truth": "10",
+        "predicted": "10",
+        "correct": true,
+        "response_length": 547
+      },
+      {
+        "question": "Find the domain of the function $f(x)=\\sqrt{\\sqrt{x^2-16}-3}$....",
+        "ground_truth": "(-\\infty,-5]\\cup[5,\\infty)",
+        "predicted": "(-\\infty, -5] \\cup [5, \\infty)",
+        "correct": false,
+        "response_length": 492
+      },
+      {
+        "question": "Evaluate the infinite geometric series: $$1-\\frac{2}{7}+\\frac{4}{49}-\\frac{8}{343}+\\dots$$...",
+        "ground_truth": "\\frac{7}{9}",
+        "predicted": "\\dfrac{7}{9}",
+        "correct": false,
+        "response_length": 535
+      },
+      {
+        "question": "If $-6\\leq a \\leq -2$ and $3 \\leq b \\leq 5$, what is the greatest possible value of $\\displaystyle\\l...",
+        "ground_truth": "-\\frac{35}{9}",
+        "predicted": "-\\dfrac{35}{9}",
+        "correct": false,
+        "response_length": 1530
+      },
+      {
+        "question": "If we express $3x^2 + x - 4$ in the form $a(x - h)^2 + k$, then what is $k$?...",
+        "ground_truth": "-\\frac{49}{12}",
+        "predicted": "-\\frac{49}{12}",
+        "correct": true,
+        "response_length": 409
+      },
+      {
+        "question": "If $f(x) = x^3 - 6x^2 + 3x - 4$, $g(x) = x^3 + 5x^2 + 9x - 2$, then find the constant term of $f(g(x...",
+        "ground_truth": "-42",
+        "predicted": "-42",
+        "correct": true,
+        "response_length": 505
+      },
+      {
+        "question": "You have two circles, one with radius $r$ and the other with radius $R$. You wish for the difference...",
+        "ground_truth": "\\frac{1}{2}",
+        "predicted": "\\frac{1}{2}",
+        "correct": true,
+        "response_length": 4791
+      },
+      {
+        "question": "Completely simplify and rationalize the denominator: $$\\frac{\\sqrt{160}}{\\sqrt{252}}\\times\\frac{\\sqr...",
+        "ground_truth": "\\frac{5\\sqrt{42}}{27}",
+        "predicted": "\\dfrac{5\\sqrt{42}}{27}",
+        "correct": false,
+        "response_length": 3814
+      },
+      {
+        "question": "Given that\n\n\\begin{align*}\n\\frac{1}{x}+\\frac{1}{y}&=5,\\\\\n3xy+x+y&=4,\n\\end{align*}\n\ncompute $x^2y+xy^...",
+        "ground_truth": "\\frac{5}{4}",
+        "predicted": "\\frac{5}{4}",
+        "correct": true,
+        "response_length": 443
+      },
+      {
+        "question": "The sum of the product and the sum of two positive integers is $454$. Find the largest possible valu...",
+        "ground_truth": "33840",
+        "predicted": null,
+        "correct": false,
+        "response_length": 10260
+      },
+      {
+        "question": "Let $f(x)=\\frac{(x-2)^2-9}{3}$.\n\nThe equation $y=f(x)$ is graphed, and the $x$- and $y$-intercepts o...",
+        "ground_truth": "5",
+        "predicted": "5",
+        "correct": true,
+        "response_length": 558
+      },
+      {
+        "question": "If $725x + 727y = 1500$ and $729x+ 731y = 1508$, what is the value of $x - y$ ?...",
+        "ground_truth": "-48",
+        "predicted": null,
+        "correct": false,
+        "response_length": 6544
+      },
+      {
+        "question": "Suppose that  $4^{a}=5$, $5^{b}=6$, $6^{c}=7,$ and  $7^{d}=8$. What is $a\\cdot b\\cdot c\\cdot d$?...",
+        "ground_truth": "\\frac{3}{2}",
+        "predicted": null,
+        "correct": false,
+        "response_length": 4875
+      }
+    ]
+  },
+  "model": "outputs/exp2_2_lora",
+  "gpu_info": {
+    "gpu_0": {
+      "name": "NVIDIA H200",
+      "total_gb": 150.11,
+      "allocated_gb": 0.0,
+      "reserved_gb": 0.0,
+      "free_gb": 150.11
+    }
+  },
+  "_metadata": {
+    "timestamp": "2026-04-28T19:53:07.743633",
+    "hostname": "ubuntu-gpu-pod-vv-h200"
+  }
+}
