@@ -115,8 +115,23 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+    # CRITICAL: Force SDPA to use memory-efficient kernels, NOT the math fallback.
+    # Math fallback stores full attention matrices: num_layers × heads × 16K × 16K = 100-150 GB!
+    # Flash/mem_efficient paths are O(N) memory.
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(False)  # Disable O(n²) fallback!
+    logger.info("SDPA config: flash=True, mem_efficient=True, math=DISABLED")
+
     logger.info("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+
+    # Memory profiling
+    if torch.cuda.is_available():
+        model.cuda()
+        alloc = torch.cuda.memory_allocated() / 1e9
+        reserved = torch.cuda.memory_reserved() / 1e9
+        logger.info(f"After model.cuda(): allocated={alloc:.1f}GB, reserved={reserved:.1f}GB")
 
     # PEFT config
     peft_config = get_peft_config(config)
