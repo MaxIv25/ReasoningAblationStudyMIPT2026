@@ -161,7 +161,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         prediction_loss_only=True,  # Don't materialize full logits — only compute loss
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=lr,
-        lr_scheduler_type="cosine",
+        lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
         weight_decay=train_cfg.get("weight_decay", 0.01),
         bf16=train_cfg.get("bf16", True),
