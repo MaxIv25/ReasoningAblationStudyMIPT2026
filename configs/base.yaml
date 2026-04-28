@@ -14,8 +14,8 @@ teacher:
   # name: "/path/to/local/Qwen3.5-35B-A3B"
 
 training:
-  per_device_train_batch_size: 2    # batch=4 OOM at 16K (logits=60GB)
-  gradient_accumulation_steps: 8    # effective batch = 16
+  per_device_train_batch_size: 1    # batch=2 uses 131GB; batch=1 ≈ 65-70GB. Same speed (1×16 vs 2×8).
+  gradient_accumulation_steps: 16   # effective batch still = 16
   packing: false                    # SDPA + packing creates 16K×16K mask → O(n²) fallback. Needs flash_attention_2.
   save_total_limit: 2               # was 5 — save disk space
   warmup_ratio: 0.05
