@@ -31,6 +31,8 @@ def main():
             row_len = {"Experiment": run_name}
             
             for bench, metrics in res.items():
+                if bench == "aime2026":
+                    continue
                 if isinstance(metrics, dict) and "accuracy" in metrics:
                     benchmarks.add(bench)
                     row_acc[bench] = metrics.get("accuracy", "-")
