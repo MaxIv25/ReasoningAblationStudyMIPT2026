@@ -34,11 +34,13 @@ class CurriculumSFTTrainer(SFTTrainer):
     This ensures that data prepared and sorted by difficulty (easy-to-hard)
     is actually fed to the model in that exact order.
     """
-    def _get_train_sampler(self) -> torch.utils.data.Sampler | None:
-        if self.train_dataset is None or not len(self.train_dataset):
+    def _get_train_sampler(self, dataset=None) -> torch.utils.data.Sampler | None:
+        # In newer transformers, dataset is passed as a positional arg
+        ds = dataset if dataset is not None else self.train_dataset
+        if ds is None or not len(ds):
             return None
         from torch.utils.data import SequentialSampler
-        return SequentialSampler(self.train_dataset)
+        return SequentialSampler(ds)
 
 
 
