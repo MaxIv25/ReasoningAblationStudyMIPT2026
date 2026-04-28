@@ -309,15 +309,17 @@ def prepare_sft_data(
     # Format for SFT
     formatted = format_for_sft(ds)
 
-    # Apply curriculum
-    formatted = apply_curriculum(formatted, order=curriculum)
-
-    # Split
+    # IMPORTANT: Split FIRST, then apply curriculum to train only.
+    # train_test_split shuffles internally, which would destroy any
+    # curriculum ordering applied before it.
     splits = split_train_eval(
         formatted,
         eval_fraction=data_config.get("eval_fraction", 0.05),
         seed=data_config.get("seed", 42),
     )
+
+    # Apply curriculum ordering to train split only
+    splits["train"] = apply_curriculum(splits["train"], order=curriculum)
 
     # Save if output dir specified
     if output_dir:

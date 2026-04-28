@@ -1,0 +1,11 @@
+# Exp 3.2: Curriculum — Random (control)
+# Standard SFTTrainer with RandomSampler (shuffles each epoch)
+# This is the control: same method/hyperparams, but no curriculum ordering
+method: full_ft
+run_name: "exp3_2_random"
+
+training:
+  curriculum_learning: false
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2

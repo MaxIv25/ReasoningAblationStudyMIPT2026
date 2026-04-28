@@ -1,0 +1,11 @@
+# Exp 3.3: Curriculum — Hard → Easy
+# Data must be pre-sorted by difficulty (descending) via prepare_curriculum_data.py
+# Uses CurriculumSFTTrainer (SequentialSampler) to preserve ordering
+method: full_ft
+run_name: "exp3_3_hard2easy"
+
+training:
+  curriculum_learning: true
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2
