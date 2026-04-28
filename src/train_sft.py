@@ -59,7 +59,7 @@ def get_peft_config(config: dict) -> LoraConfig | None:
     return LoraConfig(**peft_kwargs)
 
 
-def train(config: dict, data_dir: str = None, output_dir: str = None):
+def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bool = False):
     """
     Run SFT training.
     
@@ -139,8 +139,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         output_dir=output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 4),
-        per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 4),
-        eval_accumulation_steps=4,
+        # IMPORTANT: eval at 16K + 248K vocab without liger → 60GB logits tensor at batch=4.
+        # Liger kernel only fuses CE during training, not eval!
+        per_device_eval_batch_size=1,
+        eval_accumulation_steps=8,
+        prediction_loss_only=True,  # Don't materialize full logits — only compute loss
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=lr,
         lr_scheduler_type="cosine",
@@ -181,13 +184,26 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         peft_config=peft_config,
     )
 
-    # NOTE: save_only_model=True means no optimizer states are saved,
-    # so resume_from_checkpoint would start with fresh optimizer.
-    # For ablation study, restart from scratch if training fails.
+    # Resume from checkpoint if requested
+    resume_checkpoint = None
+    if resume:
+        # Auto-detect latest checkpoint in output_dir
+        checkpoints = sorted(
+            [d for d in Path(output_dir).glob("checkpoint-*") if d.is_dir()],
+            key=lambda x: int(x.name.split("-")[-1]),
+        )
+        if checkpoints:
+            resume_checkpoint = str(checkpoints[-1])
+            logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
+            # NOTE: save_only_model=True means optimizer state is NOT saved.
+            # Trainer will restore model weights + step counter + LR scheduler state,
+            # but optimizer starts fresh. For cosine schedule near the end, this is fine.
+        else:
+            logger.warning("--resume requested but no checkpoints found, starting from scratch")
 
     # Train
     logger.info("Starting training...")
-    train_result = trainer.train()
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     # Save
     logger.info(f"Saving model to {output_dir}")
@@ -226,6 +242,10 @@ def main():
         choices=["full_ft", "lora", "dora", "pissa"],
         help="Training method (overrides config)",
     )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from latest checkpoint in output-dir",
+    )
 
     args = parser.parse_args()
 
@@ -237,6 +257,7 @@ def main():
         config=config,
         data_dir=args.data_dir,
         output_dir=args.output_dir,
+        resume=args.resume,
     )
 
 

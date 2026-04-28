@@ -24,9 +24,9 @@ training:
   gradient_checkpointing: true
   max_grad_norm: 1.0
   save_strategy: "steps"
-  save_steps: 2000              # was 500 — less I/O overhead
+  save_steps: 500               # Save often! Trainer evals BEFORE save, so eval crash = lost checkpoint.
   logging_steps: 50
-  eval_steps: 2000              # was 500 — eval at 16K is very expensive, 3 evals/epoch is enough
+  eval_steps: 2000              # eval at 16K is expensive; save_steps < eval_steps ensures checkpoints survive eval crashes
 
   # Full FT defaults
   # LR=1e-5: standard for SFT on reasoning traces.
