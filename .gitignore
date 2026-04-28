@@ -1,10 +1,11 @@
 # Outputs and checkpoints
-outputs/
+outputs/*/checkpoint-*/
 data/
 logs/*.log
 
-# Results (keep structure but not large files)
-**/results/*.json
+# Results (allow pushing evaluation results)
+!results/*.json
+!outputs/*/runs/
 !**/results/.gitkeep
 
 # Python
