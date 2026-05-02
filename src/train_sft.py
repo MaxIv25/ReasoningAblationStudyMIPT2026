@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from datasets import load_from_disk
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTTrainer, SFTConfig
@@ -41,6 +42,69 @@ class CurriculumSFTTrainer(SFTTrainer):
             return None
         from torch.utils.data import SequentialSampler
         return SequentialSampler(ds)
+
+
+class PromptLossMixin:
+    """
+    Mixin that overrides compute_loss to apply a weight factor to prompt tokens.
+    
+    By default, SFTTrainer sets labels=-100 for prompt tokens (fully masked).
+    This mixin restores those tokens and applies `prompt_loss_weight` to them,
+    so the model also learns from the problem statement, but with lower priority
+    than the reasoning trace.
+    
+    Usage: set `prompt_loss_weight` attribute on the trainer instance (0.0 = masked,
+    1.0 = equal to completion, typical values: 0.1-0.5).
+    """
+    prompt_loss_weight: float = 0.1
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        # Extract labels — SFTTrainer has set prompt tokens to -100
+        labels = inputs.get("labels").clone()
+        input_ids = inputs.get("input_ids")
+
+        # Build a mask: True where labels were masked (prompt tokens)
+        prompt_mask = (labels == -100)
+        # Restore masked labels to actual input_ids (shifted by 1 for causal LM)
+        labels[prompt_mask] = input_ids[prompt_mask]
+
+        # Forward pass
+        inputs_for_model = {k: v for k, v in inputs.items() if k != "labels"}
+        outputs = model(**inputs_for_model)
+        logits = outputs.logits
+
+        # Shift for causal LM: predict next token
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        shift_prompt_mask = prompt_mask[..., 1:].contiguous()
+
+        # Compute per-token loss (no reduction)
+        loss_per_token = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,  # still ignore padding
+            reduction="none",
+        ).view(shift_labels.shape)
+
+        # Build weight tensor: 1.0 for completion tokens, prompt_loss_weight for prompt
+        weights = torch.ones_like(loss_per_token)
+        weights[shift_prompt_mask] = self.prompt_loss_weight
+
+        # Weighted mean (only over non-padding tokens)
+        valid_mask = (shift_labels != -100)
+        loss = (loss_per_token * weights * valid_mask).sum() / (weights * valid_mask).sum()
+
+        return (loss, outputs) if return_outputs else loss
+
+
+class PromptLossSFTTrainer(PromptLossMixin, SFTTrainer):
+    """SFTTrainer with weighted prompt loss."""
+    pass
+
+
+class CurriculumPromptLossSFTTrainer(PromptLossMixin, CurriculumSFTTrainer):
+    """CurriculumSFTTrainer with weighted prompt loss."""
+    pass
 
 
 
@@ -209,9 +273,18 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
     )
 
     use_curriculum = train_cfg.get("curriculum_learning", False)
-    if use_curriculum:
-        logger.info("Using CurriculumSFTTrainer (SequentialSampler) for sorted data training")
+    prompt_loss_weight = train_cfg.get("prompt_loss_weight", 0.0)
+
+    # Select trainer class based on enabled features
+    if use_curriculum and prompt_loss_weight > 0:
+        trainer_cls = CurriculumPromptLossSFTTrainer
+        logger.info(f"Using CurriculumPromptLossSFTTrainer (sequential + prompt_loss_weight={prompt_loss_weight})")
+    elif use_curriculum:
         trainer_cls = CurriculumSFTTrainer
+        logger.info("Using CurriculumSFTTrainer (SequentialSampler) for sorted data training")
+    elif prompt_loss_weight > 0:
+        trainer_cls = PromptLossSFTTrainer
+        logger.info(f"Using PromptLossSFTTrainer (prompt_loss_weight={prompt_loss_weight})")
     else:
         trainer_cls = SFTTrainer
 
@@ -223,6 +296,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         processing_class=tokenizer,  # TRL 1.x: was tokenizer
         peft_config=peft_config,
     )
+
+    # Set prompt_loss_weight on trainer if applicable
+    if prompt_loss_weight > 0:
+        trainer.prompt_loss_weight = prompt_loss_weight
+        logger.info(f"Prompt loss weight set to {prompt_loss_weight}")
 
     # Resume from checkpoint if requested
     resume_checkpoint = None

@@ -1,0 +1,10 @@
+# Exp 4.1: Full FT without weight decay
+# Only cosine warmup, no regularization penalty on weights
+method: full_ft
+run_name: "exp4_1_no_wd"
+
+training:
+  weight_decay: 0.0       # <-- отключаем weight decay
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2

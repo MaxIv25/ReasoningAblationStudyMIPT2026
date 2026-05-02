@@ -1,0 +1,13 @@
+# Exp 4.2: Full FT with prompt loss
+# Loss is computed on both prompt (question) and completion (reasoning trace).
+# prompt_loss_weight=0.1 means prompt tokens contribute 10% as much as completion tokens.
+# Hypothesis: learning from the problem structure helps the model better understand
+# what kind of reasoning is expected for different problem types.
+method: full_ft
+run_name: "exp4_2_prompt_loss"
+
+training:
+  prompt_loss_weight: 0.1   # <-- 10% weight on prompt tokens
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2
