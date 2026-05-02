@@ -25,6 +25,7 @@ python src/evaluate.py \
     --model "$BASE_MODEL" \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/base_model_maj${NUM_SAMPLES}.json"
 
 # ── Exp 2.1: Full FT ──────────────────────────────────────
@@ -35,6 +36,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp2_1_full_ft_maj${NUM_SAMPLES}.json"
 
 # ── Exp 2.2: LoRA ─────────────────────────────────────────
@@ -46,6 +48,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp2_2_lora_maj${NUM_SAMPLES}.json"
 
 # ── Exp 2.3: DoRA ─────────────────────────────────────────
@@ -57,6 +60,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp2_3_dora_maj${NUM_SAMPLES}.json"
 
 # ── Exp 2.4: PiSSA ────────────────────────────────────────
@@ -68,6 +72,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp2_4_pissa_maj${NUM_SAMPLES}.json"
 
 # ── Exp 3.1: Curriculum easy→hard ──────────────────────────
@@ -78,6 +83,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp3_1_easy2hard_maj${NUM_SAMPLES}.json"
 
 # ── Exp 3.2: Curriculum random ─────────────────────────────
@@ -88,6 +94,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp3_2_random_maj${NUM_SAMPLES}.json"
 
 # ── Exp 3.3: Curriculum hard→easy ──────────────────────────
@@ -98,6 +105,7 @@ python src/evaluate.py \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
+    --gpu-mem 0.5 \
     --output "$RESULTS_DIR/exp3_3_hard2easy_maj${NUM_SAMPLES}.json"
 
 echo ""
