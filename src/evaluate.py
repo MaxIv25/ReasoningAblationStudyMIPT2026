@@ -167,6 +167,7 @@ def evaluate_model(
     tensor_parallel_size: int = 1,
     gpu_memory_utilization: float = 0.9,
     lora_path: str = None,
+    merge_lora: bool = False,
 ) -> dict:
     """
     Evaluate a model on GSM8K and/or MATH-500.
@@ -218,6 +219,36 @@ def evaluate_model(
     logger.info(f"Loading model: {model_path}")
     if lora_path:
         logger.info(f"LoRA adapter: {lora_path}")
+
+    # If merge_lora is set, merge adapter into base model first
+    # This is required for adapter types that vLLM doesn't support natively (e.g. DoRA)
+    merged_model_dir = None
+    if lora_path and merge_lora:
+        import tempfile
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        logger.info(f"Merging adapter into base model (required for DoRA/unsupported adapter types)...")
+        merged_model_dir = tempfile.mkdtemp(prefix="merged_eval_")
+
+        base = AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=torch.bfloat16, trust_remote_code=True,
+        )
+        model_merged = PeftModel.from_pretrained(base, lora_path)
+        model_merged = model_merged.merge_and_unload()
+        model_merged.save_pretrained(merged_model_dir)
+
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        tokenizer.save_pretrained(merged_model_dir)
+
+        # Free memory before vLLM loads the merged model
+        del model_merged, base
+        torch.cuda.empty_cache()
+
+        logger.info(f"Merged model saved to {merged_model_dir}")
+        # Use merged model path, no LoRA needed
+        model_path = merged_model_dir
+        lora_path = None  # Adapter is already merged
 
     # Build vLLM kwargs
     llm_kwargs = dict(
@@ -434,6 +465,11 @@ def main():
         help="Path to LoRA adapter directory (loads base model + adapter on-the-fly). "
              "Use this instead of --model for PEFT checkpoints to avoid config issues.",
     )
+    parser.add_argument(
+        "--merge-lora", action="store_true",
+        help="Merge adapter into base model before eval (required for DoRA, "
+             "which vLLM doesn't support natively). Uses PEFT merge_and_unload().",
+    )
 
     args = parser.parse_args()
 
@@ -449,6 +485,7 @@ def main():
         tensor_parallel_size=args.tp,
         gpu_memory_utilization=args.gpu_mem,
         lora_path=args.lora_path,
+        merge_lora=args.merge_lora,
     )
 
     # Add model info

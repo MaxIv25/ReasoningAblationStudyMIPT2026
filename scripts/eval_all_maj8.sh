@@ -5,7 +5,8 @@
 # Usage: CUDA_VISIBLE_DEVICES=0 bash scripts/eval_all_maj8.sh
 # ============================================================
 
-set -e
+# Note: we intentionally do NOT use set -e here so that one failed eval
+# doesn't block all subsequent experiments.
 
 BASE_MODEL="Qwen/Qwen3.5-0.8B-Base"
 BENCHMARKS="gsm8k math500 math_hard"
@@ -52,16 +53,19 @@ python src/evaluate.py \
     --output "$RESULTS_DIR/exp2_2_lora_maj${NUM_SAMPLES}.json"
 
 # ── Exp 2.3: DoRA ─────────────────────────────────────────
+# NOTE: vLLM does not support DoRA natively.
+# Use --merge-lora to merge adapter into base model before eval.
 echo ""
-echo "[4/8] Evaluating exp2_3_dora..."
+echo "[4/8] Evaluating exp2_3_dora (merge-lora mode)..."
 python src/evaluate.py \
     --model "$BASE_MODEL" \
     --lora-path outputs/exp2_3_dora \
+    --merge-lora \
     --chat-template \
     --benchmarks $BENCHMARKS \
     --num-samples $NUM_SAMPLES \
     --gpu-mem 0.5 \
-    --output "$RESULTS_DIR/exp2_3_dora_maj${NUM_SAMPLES}.json"
+    --output "$RESULTS_DIR/exp2_3_dora_maj${NUM_SAMPLES}.json" || echo "WARNING: exp2_3_dora evaluation failed"
 
 # ── Exp 2.4: PiSSA ────────────────────────────────────────
 echo ""
