@@ -1,0 +1,10 @@
+# Exp 5.2: Vanilla GRPO on SFT model (Full FT)
+# Purpose: Standard GRPO after SFT — main comparison baseline
+# Expected: Improvement over SFT-only (exp2_1) on reasoning benchmarks
+run_name: "exp5_2_grpo_sft"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "grpo"

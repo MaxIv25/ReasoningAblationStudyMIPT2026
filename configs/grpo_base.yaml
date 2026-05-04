@@ -1,0 +1,57 @@
+# ============================================================
+# Base config for GRPO experiments — shared across all variants
+# Inherits model/eval settings from configs/base.yaml via load_config
+# ============================================================
+
+model:
+  name: "Qwen/Qwen3.5-0.8B-Base"
+  torch_dtype: "bfloat16"
+
+grpo:
+  # Loss formulation (overridden per experiment)
+  loss_type: "grpo"
+
+  # Generation
+  num_generations: 8           # Group size G — 8 completions per prompt
+  max_completion_length: 8192  # Start with 8K, increase to 16K if VRAM allows
+  max_prompt_length: 1024      # Math prompts are usually short
+
+  # Clipping (PPO-style)
+  epsilon: 0.2                 # Standard symmetric clip
+  # epsilon_high: null         # Set only for DAPO (asymmetric)
+
+  # KL divergence
+  beta: 0.0                   # No KL penalty — modern practice for reasoning
+
+  # Reward scaling
+  scale_rewards: "group"       # Normalize by group std (default GRPO)
+
+  # Truncation
+  mask_truncated_completions: true  # Ignore completions that hit max length
+
+  # vLLM
+  use_vllm: true
+  vllm_gpu_memory_utilization: 0.7  # Colocate: share GPU with training
+
+training:
+  per_device_train_batch_size: 1   # With 8 generations → effective 8 sequences per step
+  gradient_accumulation_steps: 8   # Effective batch = 8 prompts × 8 generations = 64 sequences
+  learning_rate: 5.0e-7            # Low LR for RL fine-tuning
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  num_train_epochs: 1              # ~2500 steps for 20K samples
+  save_steps: 100
+  save_total_limit: 3
+  logging_steps: 10
+
+eval:
+  benchmarks:
+    - gsm8k
+    - math500
+    - math_hard
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  max_new_tokens: 8192

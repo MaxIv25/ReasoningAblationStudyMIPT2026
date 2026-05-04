@@ -1,0 +1,14 @@
+# Exp 5.4: Dr. GRPO on SFT model (Full FT)
+# Purpose: Compare Dr. GRPO's bias-free normalization
+# Key differences from vanilla GRPO:
+#   - loss_type="dr_grpo": normalize by constant (max_completion_length) instead of seq length
+#   - scale_rewards=false: no division by std(r), eliminates question-level difficulty bias
+# Expected: More stable training, equal treatment of easy/hard problems
+run_name: "exp5_4_dr_grpo_sft"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "dr_grpo"
+  scale_rewards: false   # Dr. GRPO: remove difficulty bias from std scaling

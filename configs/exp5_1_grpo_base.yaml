@@ -1,0 +1,10 @@
+# Exp 5.1: Vanilla GRPO on BASE model
+# Purpose: Show that SFT phase before GRPO is essential
+# Expected: Poor performance — base model can't reason in <think> format
+run_name: "exp5_1_grpo_base"
+
+model:
+  name: "Qwen/Qwen3.5-0.8B-Base"
+
+grpo:
+  loss_type: "grpo"

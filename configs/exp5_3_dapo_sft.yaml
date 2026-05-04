@@ -1,0 +1,15 @@
+# Exp 5.3: DAPO on SFT model (Full FT)
+# Purpose: Compare DAPO's token-level normalization + asymmetric clipping
+# Key differences from vanilla GRPO:
+#   - loss_type="dapo": token-level loss normalization (reduces length bias)
+#   - epsilon_high=0.28: relaxed upper clip for exploration (vs 0.2 symmetric)
+# Expected: Better handling of long CoT, more exploration
+run_name: "exp5_3_dapo_sft"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "dapo"
+  epsilon: 0.2
+  epsilon_high: 0.28    # Asymmetric: encourage exploration
