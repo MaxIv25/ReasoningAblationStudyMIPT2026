@@ -19,8 +19,9 @@ import re
 import sys
 
 # MUST be set before importing trl/transformers which may import fla.
-# TileLang backend crashes on backward pass for GDN layers.
-os.environ.setdefault("FLA_BACKEND", "triton")
+# Disable TileLang backend — it crashes on backward pass for GDN layers
+# with "Get different layout for b_dq" error. Triton backend is used instead.
+os.environ.setdefault("FLA_TILELANG", "0")
 
 from pathlib import Path
 
@@ -262,7 +263,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     logger.info(f"  num_generations={grpo_args.num_generations}")
     logger.info(f"  max_completion_length={grpo_args.max_completion_length}")
     logger.info(f"  lr={grpo_args.learning_rate}")
-    logger.info(f"  FLA_BACKEND={os.environ.get('FLA_BACKEND', 'default')}")
+    logger.info(f"  FLA_TILELANG={os.environ.get('FLA_TILELANG', 'default')}")
     logger.info(f"  attn_implementation=sdpa")
 
     # ── Create trainer ────────────────────────────────────────
