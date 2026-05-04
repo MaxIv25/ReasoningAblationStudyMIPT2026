@@ -17,6 +17,11 @@ import argparse
 import os
 import re
 import sys
+
+# MUST be set before importing trl/transformers which may import fla.
+# TileLang backend crashes on backward pass for GDN layers.
+os.environ.setdefault("FLA_BACKEND", "triton")
+
 from pathlib import Path
 
 import torch
@@ -167,11 +172,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     torch.backends.cuda.enable_math_sdp(False)
     logger.info("SDPA config: flash=True, mem_efficient=True, math=DISABLED")
 
-    # Use Triton backend for flash-linear-attention (GDN layers).
-    # TileLang backend crashes on backward pass with layout inference bug.
-    os.environ.setdefault("FLA_BACKEND", "triton")
-    logger.info(f"FLA backend: {os.environ.get('FLA_BACKEND', 'default')}")
-
     # Load dataset
     if data_dir:
         train_dataset = load_from_disk(data_dir)
@@ -248,11 +248,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         reward_weights=[1.0, 0.3],
 
         # Model loading kwargs
-        # NOTE: "eager" avoids tilelang JIT crash on GDN backward pass.
-        # Set FLA_BACKEND=triton env var BEFORE launching python for faster alternative.
         model_init_kwargs={
             "torch_dtype": "bfloat16",
-            "attn_implementation": os.environ.get("ATTN_IMPL", "eager"),
+            "attn_implementation": "sdpa",
         },
     )
 
@@ -264,6 +262,8 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     logger.info(f"  num_generations={grpo_args.num_generations}")
     logger.info(f"  max_completion_length={grpo_args.max_completion_length}")
     logger.info(f"  lr={grpo_args.learning_rate}")
+    logger.info(f"  FLA_BACKEND={os.environ.get('FLA_BACKEND', 'default')}")
+    logger.info(f"  attn_implementation=sdpa")
 
     # ── Create trainer ────────────────────────────────────────
     trainer = GRPOTrainer(
