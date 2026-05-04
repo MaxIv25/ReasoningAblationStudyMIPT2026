@@ -6,6 +6,8 @@ vllm>=0.8
 datasets
 accelerate
 math-verify
+tilelang                 # GPU kernel compiler — dependency for FlashQLA (Qwen3.5 GDN layers)
+flash-linear-attention   # FlashQLA kernels for Qwen3.5 hybrid GDN/linear attention layers
 tensorboard
 hf_transfer
 liger-kernel>=0.5    # Fused CE loss — critical for 248K vocab (avoids 30GB logits)
