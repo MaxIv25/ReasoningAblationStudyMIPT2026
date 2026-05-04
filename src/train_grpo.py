@@ -17,28 +17,11 @@ import argparse
 import os
 import re
 import sys
-
-# MUST be set before importing trl/transformers which may import fla.
-# Disable TileLang backend — it crashes on backward pass for GDN layers
-# with "Get different layout for b_dq" error. Triton backend is used instead.
-os.environ.setdefault("FLA_TILELANG", "0")
-
 from pathlib import Path
 
 import torch
 from datasets import load_from_disk
 from trl import GRPOTrainer, GRPOConfig
-
-# ── Patch: bypass Hopper+Triton≥3.4.0 guard in fla ──────────────────
-# fla blocks triton backward on Hopper (issue #640) but tilelang also
-# crashes with layout inference bug. We patch the module-level guard
-# variable to allow triton fallback. Slight numerical risk but the
-# only viable path without a tilelang fix.
-try:
-    import fla.ops.common.chunk_o as _chunk_o
-    _chunk_o.IS_NVIDIA_HOPPER = False
-except Exception:
-    pass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.utils import load_config, setup_logging, get_gpu_memory_info, extract_boxed_answer
@@ -274,7 +257,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     logger.info(f"  num_generations={grpo_args.num_generations}")
     logger.info(f"  max_completion_length={grpo_args.max_completion_length}")
     logger.info(f"  lr={grpo_args.learning_rate}")
-    logger.info(f"  FLA_TILELANG={os.environ.get('FLA_TILELANG', 'default')}")
     logger.info(f"  attn_implementation=sdpa")
 
     # ── Create trainer ────────────────────────────────────────
