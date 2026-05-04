@@ -240,6 +240,12 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
 
         # Reward weights: accuracy is primary, format is secondary
         reward_weights=[1.0, 0.3],
+
+        # Model loading kwargs
+        model_init_kwargs={
+            "torch_dtype": "bfloat16",
+            "attn_implementation": "sdpa",
+        },
     )
 
     # Log key config differences between variants
@@ -257,10 +263,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         args=grpo_args,
         train_dataset=train_dataset,
         reward_funcs=[accuracy_reward, format_reward],
-        model_init_kwargs={
-            "torch_dtype": torch.bfloat16,
-            "attn_implementation": "sdpa",
-        },
     )
 
     # ── Train ─────────────────────────────────────────────────
