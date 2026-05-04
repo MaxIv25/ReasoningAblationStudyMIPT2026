@@ -29,6 +29,17 @@ import torch
 from datasets import load_from_disk
 from trl import GRPOTrainer, GRPOConfig
 
+# ── Patch: bypass Hopper+Triton≥3.4.0 guard in fla ──────────────────
+# fla blocks triton backward on Hopper (issue #640) but tilelang also
+# crashes with layout inference bug. We patch the module-level guard
+# variable to allow triton fallback. Slight numerical risk but the
+# only viable path without a tilelang fix.
+try:
+    import fla.ops.common.chunk_o as _chunk_o
+    _chunk_o.IS_NVIDIA_HOPPER = False
+except Exception:
+    pass
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.utils import load_config, setup_logging, get_gpu_memory_info, extract_boxed_answer
 
