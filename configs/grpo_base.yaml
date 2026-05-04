@@ -12,9 +12,9 @@ grpo:
   loss_type: "grpo"
 
   # Generation
-  num_generations: 8           # Group size G — 8 completions per prompt
-  max_completion_length: 8192  # Start with 8K, increase to 16K if VRAM allows
-  max_prompt_length: 1024      # Math prompts are usually short
+  num_generations: 8            # Group size G — 8 completions per prompt
+  max_completion_length: 16384  # 16K tokens — fits on H200 with 0.8B model
+  max_prompt_length: 1024       # Math prompts are usually short
 
   # Clipping (PPO-style)
   epsilon: 0.2                 # Standard symmetric clip
@@ -31,7 +31,7 @@ grpo:
 
   # vLLM
   use_vllm: true
-  vllm_gpu_memory_utilization: 0.7  # Colocate: share GPU with training
+  vllm_gpu_memory_utilization: 0.5  # Colocate: 0.8B model needs little KV cache, save room for training
 
 training:
   per_device_train_batch_size: 1   # With 8 generations → effective 8 sequences per step

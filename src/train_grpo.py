@@ -159,6 +159,13 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+    # Force SDPA to use flash/mem_efficient kernels, NOT the math fallback.
+    # Math fallback stores full attention matrices → OOM on long sequences.
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(False)
+    logger.info("SDPA config: flash=True, mem_efficient=True, math=DISABLED")
+
     # Load dataset
     if data_dir:
         train_dataset = load_from_disk(data_dir)
@@ -224,7 +231,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # vLLM handles generation, training framework handles optimization
         use_vllm=grpo_cfg.get("use_vllm", True),
         vllm_mode="colocate",
-        vllm_gpu_memory_utilization=grpo_cfg.get("vllm_gpu_memory_utilization", 0.7),
+        vllm_gpu_memory_utilization=grpo_cfg.get("vllm_gpu_memory_utilization", 0.5),
 
         # Performance
         use_liger_kernel=True,
@@ -246,6 +253,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         train_dataset=train_dataset,
         reward_funcs=[accuracy_reward, format_reward],
         reward_weights=[1.0, 0.3],  # Accuracy is primary, format is secondary
+        model_init_kwargs={
+            "torch_dtype": torch.bfloat16,
+            "attn_implementation": "sdpa",
+        },
     )
 
     # ── Train ─────────────────────────────────────────────────
