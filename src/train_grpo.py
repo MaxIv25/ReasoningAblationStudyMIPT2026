@@ -177,12 +177,12 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    # Force SDPA to use flash/mem_efficient kernels, NOT the math fallback.
-    # Math fallback stores full attention matrices → OOM on long sequences.
+    # Enable all SDPA backends — flash and mem_efficient preferred,
+    # math as fallback for shapes they can't handle.
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(False)
-    logger.info("SDPA config: flash=True, mem_efficient=True, math=DISABLED")
+    torch.backends.cuda.enable_math_sdp(True)
+    logger.info("SDPA config: flash=True, mem_efficient=True, math=True (fallback)")
 
     # Load dataset
     if data_dir:
