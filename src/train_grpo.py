@@ -14,6 +14,7 @@ Uses vLLM colocate mode for fast generation on single GPU.
 """
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -165,6 +166,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     torch.backends.cuda.enable_mem_efficient_sdp(True)
     torch.backends.cuda.enable_math_sdp(False)
     logger.info("SDPA config: flash=True, mem_efficient=True, math=DISABLED")
+
+    # Use Triton backend for flash-linear-attention (GDN layers).
+    # TileLang backend crashes on backward pass with layout inference bug.
+    os.environ.setdefault("FLA_BACKEND", "triton")
+    logger.info(f"FLA backend: {os.environ.get('FLA_BACKEND', 'default')}")
 
     # Load dataset
     if data_dir:
