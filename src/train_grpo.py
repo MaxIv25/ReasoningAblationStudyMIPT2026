@@ -184,7 +184,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
 
         # Reward scaling
         # Vanilla GRPO: "group" (default) — normalize by group std
-        # Dr. GRPO: False — no std scaling to avoid difficulty bias
+        # Dr. GRPO: "none" — no std scaling to avoid difficulty bias
         scale_rewards=grpo_cfg.get("scale_rewards", "group"),
 
         # Clipping
@@ -198,7 +198,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # Generation
         num_generations=grpo_cfg.get("num_generations", 8),
         max_completion_length=grpo_cfg.get("max_completion_length", 8192),
-        max_prompt_length=grpo_cfg.get("max_prompt_length", 1024),
+        temperature=grpo_cfg.get("temperature", 1.0),
+        top_p=grpo_cfg.get("top_p", 1.0),
+        top_k=grpo_cfg.get("top_k", 0),
 
         # Mask completions that hit max_completion_length
         # (avoid noisy gradients from truncated reasoning)

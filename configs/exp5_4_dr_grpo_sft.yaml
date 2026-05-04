@@ -11,4 +11,4 @@ model:
 
 grpo:
   loss_type: "dr_grpo"
-  scale_rewards: false   # Dr. GRPO: remove difficulty bias from std scaling
+  scale_rewards: "none"   # Dr. GRPO: remove difficulty bias from std scaling

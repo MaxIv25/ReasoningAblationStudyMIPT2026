@@ -14,7 +14,6 @@ grpo:
   # Generation
   num_generations: 8            # Group size G — 8 completions per prompt
   max_completion_length: 16384  # 16K tokens — fits on H200 with 0.8B model
-  max_prompt_length: 1024       # Math prompts are usually short
 
   # Clipping (PPO-style)
   epsilon: 0.2                 # Standard symmetric clip
