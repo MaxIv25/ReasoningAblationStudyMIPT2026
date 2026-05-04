@@ -237,6 +237,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
 
         # Performance
         use_liger_kernel=True,
+
+        # Reward weights: accuracy is primary, format is secondary
+        reward_weights=[1.0, 0.3],
     )
 
     # Log key config differences between variants
@@ -254,7 +257,6 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         args=grpo_args,
         train_dataset=train_dataset,
         reward_funcs=[accuracy_reward, format_reward],
-        reward_weights=[1.0, 0.3],  # Accuracy is primary, format is secondary
         model_init_kwargs={
             "torch_dtype": torch.bfloat16,
             "attn_implementation": "sdpa",
