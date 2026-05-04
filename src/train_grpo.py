@@ -248,9 +248,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         reward_weights=[1.0, 0.3],
 
         # Model loading kwargs
+        # NOTE: "eager" avoids tilelang JIT crash on GDN backward pass.
+        # Set FLA_BACKEND=triton env var BEFORE launching python for faster alternative.
         model_init_kwargs={
             "torch_dtype": "bfloat16",
-            "attn_implementation": "sdpa",
+            "attn_implementation": os.environ.get("ATTN_IMPL", "eager"),
         },
     )
 
