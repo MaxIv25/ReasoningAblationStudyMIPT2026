@@ -19,8 +19,37 @@ import re
 import sys
 from pathlib import Path
 
+# ── FLA/TileLang workaround for H200 (Hopper) ────────────────
+#
+# Problem: Qwen3.5 uses GDN (Gated Delta Net) linear attention layers,
+# which require flash-linear-attention (FLA) for training.
+#
+# On Hopper GPUs (H200/H100) + Triton >= 3.4.0:
+#   1. TileLang backend CRASHES in backward pass with
+#      "Get different layout for b_dq" (tilelang LayoutInference bug)
+#   2. Triton fallback is BLOCKED by FLA with RuntimeError because
+#      Triton >= 3.4 on Hopper produces slightly incorrect results
+#      for gated chunk_bwd_dqkwg (FLA issue #640)
+#
+# Solution: Disable tilelang (env var), then patch fla.utils to pretend
+# we're not on Hopper so the Triton fallback is allowed. The numerical
+# differences from #640 are minor and acceptable for RL training with
+# bf16 precision.
+#
+os.environ["FLA_TILELANG"] = "0"
+
 import torch
 from datasets import load_from_disk
+
+# Patch FLA: allow Triton fallback on Hopper by disabling the guard.
+# The guard is inside chunk_bwd_dqkwg which reads IS_NVIDIA_HOPPER at
+# call time from its module globals (imported from fla.utils).
+import fla.utils
+fla.utils.IS_NVIDIA_HOPPER = False
+# Also patch the local reference in chunk_o module
+import fla.ops.common.chunk_o as _chunk_o
+_chunk_o.IS_NVIDIA_HOPPER = False
+
 from trl import GRPOTrainer, GRPOConfig
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -171,6 +200,12 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     if data_dir:
         train_dataset = load_from_disk(data_dir)
         logger.info(f"Loaded dataset: {len(train_dataset)} examples")
+
+        # Optionally truncate dataset (grpo.num_samples)
+        num_samples = grpo_cfg.get("num_samples", None)
+        if num_samples and num_samples < len(train_dataset):
+            train_dataset = train_dataset.select(range(num_samples))
+            logger.info(f"Truncated dataset to {num_samples} examples (grpo.num_samples)")
     else:
         raise ValueError("--data-dir is required for GRPO training")
 
@@ -207,6 +242,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # (avoid noisy gradients from truncated reasoning)
         mask_truncated_completions=grpo_cfg.get("mask_truncated_completions", True),
 
+        # Generation batching — larger batch = fewer vLLM calls = better throughput
+        generation_batch_size=grpo_cfg.get("generation_batch_size", None),
+
         # Training
         num_train_epochs=train_cfg.get("num_train_epochs", 1),
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 1),
@@ -216,6 +254,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
         weight_decay=train_cfg.get("weight_decay", 0.01),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
+
+        # Data loading
+        dataloader_num_workers=train_cfg.get("dataloader_num_workers", 0),
 
         # Precision
         bf16=True,
@@ -230,11 +271,17 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         logging_steps=train_cfg.get("logging_steps", 10),
         report_to="tensorboard",
 
-        # vLLM — colocate mode on single GPU
-        # vLLM handles generation, training framework handles optimization
+        # vLLM — mode from config (server or colocate)
         use_vllm=grpo_cfg.get("use_vllm", True),
-        vllm_mode="colocate",
-        vllm_gpu_memory_utilization=grpo_cfg.get("vllm_gpu_memory_utilization", 0.5),
+        vllm_mode=grpo_cfg.get("vllm_mode", "colocate"),
+        **(
+            {"vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3)}
+            if grpo_cfg.get("vllm_mode", "colocate") == "colocate"
+            else {
+                "vllm_server_port": grpo_cfg.get("vllm_server_port", 8000),
+                "vllm_group_port": grpo_cfg.get("vllm_group_port", 51216),
+            }
+        ),
 
         # Performance
         use_liger_kernel=True,
@@ -257,6 +304,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     logger.info(f"  num_generations={grpo_args.num_generations}")
     logger.info(f"  max_completion_length={grpo_args.max_completion_length}")
     logger.info(f"  lr={grpo_args.learning_rate}")
+    logger.info(f"  generation_batch_size={grpo_args.generation_batch_size}")
+    logger.info(f"  steps_per_generation={grpo_args.steps_per_generation}")
+    logger.info(f"  dataloader_num_workers={grpo_args.dataloader_num_workers}")
     logger.info(f"  attn_implementation=sdpa")
 
     # ── Create trainer ────────────────────────────────────────

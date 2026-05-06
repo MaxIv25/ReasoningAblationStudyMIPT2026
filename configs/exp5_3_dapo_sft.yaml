@@ -13,3 +13,5 @@ grpo:
   loss_type: "dapo"
   epsilon: 0.2
   epsilon_high: 0.28    # Asymmetric: encourage exploration
+  vllm_server_port: 8457  # Separate port for parallel run with GRPO (8456)
+  vllm_group_port: 51218  # Separate NCCL sync port (GRPO uses default 51216)

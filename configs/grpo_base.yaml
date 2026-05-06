@@ -15,6 +15,10 @@ grpo:
   num_generations: 8            # Group size G — 8 completions per prompt
   max_completion_length: 16384  # 16K tokens — fits on H200 with 0.8B model
 
+  # Dataset size for RL training
+  # Literature: TinyZero uses 3K for 0.5B, SimpleRL uses 8K for 1.5B
+  num_samples: 3000
+
   # Clipping (PPO-style)
   epsilon: 0.2                 # Standard symmetric clip
   # epsilon_high: null         # Set only for DAPO (asymmetric)
@@ -28,22 +32,32 @@ grpo:
   # Truncation
   mask_truncated_completions: true  # Ignore completions that hit max length
 
+  # Generation batching
+  # Process 8 prompts × 8 generations = 64 completions per vLLM call
+  # Reduces vLLM API calls from 20,000 to 2,500 — massive throughput gain
+  generation_batch_size: 64
+
   # vLLM
   use_vllm: true
-  vllm_gpu_memory_utilization: 0.5  # Colocate: 0.8B model needs little KV cache, save room for training
+  vllm_mode: "server"              # Separate GPU for vLLM — no memory contention
+  vllm_server_port: 8456            # Non-default port to avoid conflicts
 
 training:
-  per_device_train_batch_size: 1   # With 8 generations → effective 8 sequences per step
-  gradient_accumulation_steps: 8   # Effective batch = 8 prompts × 8 generations = 64 sequences
-  learning_rate: 5.0e-7            # Low LR for RL fine-tuning
+  per_device_train_batch_size: 2   # 2 completions per micro-batch (vocab 248K limits this)
+  gradient_accumulation_steps: 32  # 32 × 2 = 64 completions = 8 prompts per optimizer step
+                                   # Matches generation_batch_size → 1 gen call per optimizer step
+                                   # Literature: TinyZero/SimpleRL use 8 prompts per step
+  learning_rate: 1.0e-6            # Safe with 8-prompt effective batch (was 5e-7 for 1-prompt batch)
+                                   # DeepSeek-R1/SimpleRL use 1e-6
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.05
   weight_decay: 0.01
   max_grad_norm: 1.0
-  num_train_epochs: 1              # ~2500 steps for 20K samples
-  save_steps: 100
-  save_total_limit: 3
-  logging_steps: 10
+  num_train_epochs: 1              # On-policy RL: 2nd epoch useless (policy already updated)
+  save_steps: 75                    # saves at 75,150,225,300,375 — only last 2 kept on disk
+  save_total_limit: 2
+  logging_steps: 5                 # Frequent logging for short run
+  dataloader_num_workers: 4        # Async data loading
 
 eval:
   benchmarks:
