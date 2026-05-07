@@ -1,0 +1,19 @@
+# Exp 5.5: PRIME on SFT model (Full FT)
+# Purpose: Dense token-level advantage via Implicit PRM
+# Key: A_t = Return_process(t) + Return_outcome (separate normalization)
+run_name: "exp5_5_prime_sft"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "grpo"           # Base loss — PRIME changes advantage, not loss
+
+prime:
+  enabled: true
+  beta: 0.1                   # PRM scale: r(t) = β * log(π_φ/π_ref)
+  prm_lr: 1.0e-6             # PRM learning rate
+  prm_update_epochs: 1       # PRM grad steps per generation batch
+  advantage_baseline: "rloo"  # rloo | group_mean | truncated_mean | dpo_z
+  online_filter: true         # Skip prompts where all/none correct
+  gamma: 1.0                  # Discount for process returns

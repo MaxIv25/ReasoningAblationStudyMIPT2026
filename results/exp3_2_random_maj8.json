@@ -1,0 +1,466 @@
+{
+  "gsm8k": {
+    "accuracy": 79.38,
+    "metric": "maj@8",
+    "correct": 1047,
+    "total": 1319,
+    "format_compliance": 93.73,
+    "avg_response_length": 1431.8,
+    "details": [
+      {
+        "question": "Janet’s ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for ...",
+        "ground_truth": "18",
+        "majority_answer": "18",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "A robe takes 2 bolts of blue fiber and half that much white fiber.  How many bolts in total does it ...",
+        "ground_truth": "3",
+        "majority_answer": "3",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repai...",
+        "ground_truth": "70000",
+        "majority_answer": "40000",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "James decides to run 3 sprints 3 times a week.  He runs 60 meters each sprint.  How many total meter...",
+        "ground_truth": "540",
+        "majority_answer": "540",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Every day, Wendi feeds each of her chickens three cups of mixed chicken feed, containing seeds, meal...",
+        "ground_truth": "20",
+        "majority_answer": "60",
+        "num_valid": 7,
+        "correct": false
+      },
+      {
+        "question": "Kylar went to the store to buy glasses for his new apartment. One glass costs $5, but every second g...",
+        "ground_truth": "64",
+        "majority_answer": "12.50",
+        "num_valid": 7,
+        "correct": false
+      },
+      {
+        "question": "Toulouse has twice as many sheep as Charleston. Charleston has 4 times as many sheep as Seattle. How...",
+        "ground_truth": "260",
+        "majority_answer": "260",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Carla is downloading a 200 GB file. Normally she can download 2 GB/minute, but 40% of the way throug...",
+        "ground_truth": "160",
+        "majority_answer": "120",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "John drives for 3 hours at a speed of 60 mph and then turns around because he realizes he forgot som...",
+        "ground_truth": "45",
+        "majority_answer": "315",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "Eliza's rate per hour for the first 40 hours she works each week is $10. She also receives an overti...",
+        "ground_truth": "460",
+        "majority_answer": "460",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "A new program had 60 downloads in the first month. The number of downloads in the second month was t...",
+        "ground_truth": "366",
+        "majority_answer": "366",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Toula went to the bakery and bought various types of pastries. She bought 3 dozen donuts which cost ...",
+        "ground_truth": "694",
+        "majority_answer": "694",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Carlos is planting a lemon tree. The tree will cost $90 to plant. Each year it will grow 7 lemons, w...",
+        "ground_truth": "13",
+        "majority_answer": "1",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "Melanie is a door-to-door saleswoman. She sold a third of her vacuum cleaners at the green house, 2 ...",
+        "ground_truth": "18",
+        "majority_answer": "18",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "In a dance class of 20 students, 20% enrolled in contemporary dance, 25% of the remaining enrolled i...",
+        "ground_truth": "60",
+        "majority_answer": "60\\%",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "A merchant wants to make a choice of purchase between 2 purchase plans: jewelry worth $5,000 or elec...",
+        "ground_truth": "125",
+        "majority_answer": "125",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Two trains leave San Rafael at the same time. They begin traveling westward, both traveling for 80 m...",
+        "ground_truth": "230",
+        "majority_answer": "230",
+        "num_valid": 7,
+        "correct": true
+      },
+      {
+        "question": "Jill gets paid $20 per hour to teach and $30 to be a cheerleading coach. If she works 50 weeks a yea...",
+        "ground_truth": "57500",
+        "majority_answer": "125000",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "Claire makes a 3 egg omelet every morning for breakfast.  How many dozens of eggs will she eat in 4 ...",
+        "ground_truth": "7",
+        "majority_answer": "7",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Marissa is hiking a 12-mile trail. She took 1 hour to walk the first 4 miles, then another hour to w...",
+        "ground_truth": "6",
+        "majority_answer": "6",
+        "num_valid": 8,
+        "correct": true
+      }
+    ]
+  },
+  "math500": {
+    "accuracy": 57.2,
+    "metric": "maj@8",
+    "correct": 286,
+    "total": 500,
+    "format_compliance": 73.45,
+    "avg_response_length": 3162.7,
+    "details": [
+      {
+        "question": "Convert the point $(0,3)$ in rectangular coordinates to polar coordinates.  Enter your answer in the...",
+        "ground_truth": "\\left( 3, \\frac{\\pi}{2} \\right)",
+        "majority_answer": "(3,\\frac{\\pi}{2})",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "Define\n\\[p = \\sum_{k = 1}^\\infty \\frac{1}{k^2} \\quad \\text{and} \\quad q = \\sum_{k = 1}^\\infty \\frac{...",
+        "ground_truth": "p - q",
+        "majority_answer": "p - q + 1",
+        "num_valid": 3,
+        "correct": false
+      },
+      {
+        "question": "If $f(x) = \\frac{3x-2}{x-2}$, what is the value of $f(-2) +f(-1)+f(0)$? Express your answer as a com...",
+        "ground_truth": "\\frac{14}{3}",
+        "majority_answer": "\\frac{14}{3}",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "How many positive whole-number divisors does 196 have?...",
+        "ground_truth": "9",
+        "majority_answer": "9",
+        "num_valid": 7,
+        "correct": true
+      },
+      {
+        "question": "The results of a cross-country team's training run are graphed below. Which student has the greatest...",
+        "ground_truth": "\\text{Evelyn}",
+        "majority_answer": "Evelyn",
+        "num_valid": 4,
+        "correct": false
+      },
+      {
+        "question": "A regular hexagon can be divided into six equilateral triangles. If the perimeter of one of the tria...",
+        "ground_truth": "42",
+        "majority_answer": "21",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "What is the smallest positive perfect cube that can be written as the sum of three consecutive integ...",
+        "ground_truth": "27",
+        "majority_answer": "27",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "The set of points $(x,y,z)$ that satisfy\n\\[2x = 3y = -z\\]is a line.\n\nThe set of points $(x,y,z)$ tha...",
+        "ground_truth": "90^\\circ",
+        "majority_answer": "90",
+        "num_valid": 4,
+        "correct": true
+      },
+      {
+        "question": "What is the distance, in units, between the points $(2, -6)$ and $(-4, 3)$? Express your answer in s...",
+        "ground_truth": "3\\sqrt{13}",
+        "majority_answer": "3\\sqrt{13}",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "The expression $2\\cdot 3 \\cdot 4\\cdot 5+1$ is equal to 121, since multiplication is carried out befo...",
+        "ground_truth": "4",
+        "majority_answer": "1",
+        "num_valid": 3,
+        "correct": false
+      },
+      {
+        "question": "What is the least positive integer multiple of 30 that can be written with only the digits 0 and 2?...",
+        "ground_truth": "2220",
+        "majority_answer": "300",
+        "num_valid": 1,
+        "correct": false
+      },
+      {
+        "question": "Let $p(x)$ be a polynomial of degree 5 such that\n\\[p(n) = \\frac{n}{n^2 - 1}\\]for $n = 2,$ 3, 4, $\\do...",
+        "ground_truth": "\\frac{3}{56}",
+        "majority_answer": "\\frac{8}{63}",
+        "num_valid": 4,
+        "correct": false
+      },
+      {
+        "question": "The proper divisors of 12 are 1, 2, 3, 4 and 6. A proper divisor of an integer $N$ is a positive div...",
+        "ground_truth": "284",
+        "majority_answer": "175",
+        "num_valid": 7,
+        "correct": false
+      },
+      {
+        "question": "The volume of the cylinder shown is $45\\pi$ cubic cm. What is the height in centimeters of the cylin...",
+        "ground_truth": "5",
+        "majority_answer": "5",
+        "num_valid": 6,
+        "correct": true
+      },
+      {
+        "question": "Suppose $\\sin D = 0.7$ in the diagram below. What is $DE$? [asy]\npair D,E,F;\nF = (0,0);\nD = (sqrt(51...",
+        "ground_truth": "\\sqrt{51}",
+        "majority_answer": "\\sqrt{51}",
+        "num_valid": 7,
+        "correct": false
+      },
+      {
+        "question": "Let $z = 2 + \\sqrt{2} - (3 + 3 \\sqrt{2})i$, and let $c = 2 - 3i$.  Let $w$ be the result when $z$ is...",
+        "ground_truth": "6 - 5i",
+        "majority_answer": "-3i",
+        "num_valid": 5,
+        "correct": false
+      },
+      {
+        "question": "Compute: $1-2+3-4+5- \\dots +99-100$....",
+        "ground_truth": "-50",
+        "majority_answer": "-50",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Below is the graph of $y = a \\sin (bx + c) + d$ for some positive constants $a,$ $b,$ $c,$ and $d.$ ...",
+        "ground_truth": "\\pi",
+        "majority_answer": "\\pi",
+        "num_valid": 3,
+        "correct": false
+      },
+      {
+        "question": "$\\overline{BC}$ is parallel to the segment through $A$, and $AB = BC$. What is the number of degrees...",
+        "ground_truth": "28",
+        "majority_answer": "",
+        "num_valid": 2,
+        "correct": false
+      },
+      {
+        "question": "Let $a$ be a positive real number such that all the roots of\n\\[x^3 + ax^2 + ax + 1 = 0\\]are real.  F...",
+        "ground_truth": "3",
+        "majority_answer": "3",
+        "num_valid": 5,
+        "correct": true
+      }
+    ]
+  },
+  "math_hard": {
+    "accuracy": 35.2,
+    "metric": "maj@8",
+    "correct": 466,
+    "total": 1324,
+    "format_compliance": 56.52,
+    "avg_response_length": 4878.7,
+    "details": [
+      {
+        "question": "How many square units are in the region satisfying the inequalities $y \\ge |x|$ and $y \\le -|x|+3$? ...",
+        "ground_truth": "4.5",
+        "majority_answer": "2.25",
+        "num_valid": 6,
+        "correct": false
+      },
+      {
+        "question": "When Lauren was born on January 1, 1990, her grandparents put $\\$1000$ in a savings account in her n...",
+        "ground_truth": "1160",
+        "majority_answer": "1118",
+        "num_valid": 1,
+        "correct": false
+      },
+      {
+        "question": "Chris labels every lattice point in the coordinate plane with the square of the distance from the po...",
+        "ground_truth": "12",
+        "majority_answer": "8",
+        "num_valid": 5,
+        "correct": false
+      },
+      {
+        "question": "An airplane climbs 100 feet during the first second after takeoff.  In each succeeding second it cli...",
+        "ground_truth": "15",
+        "majority_answer": "120",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "Define $f(x)=\\frac{1+x}{1-x}$ and $g(x)=\\frac{-2}{x+1}$. Find the value of \\[g(f(g(f(\\dotsb g(f(12))...",
+        "ground_truth": "4",
+        "majority_answer": "\\frac{162}{53}",
+        "num_valid": 2,
+        "correct": false
+      },
+      {
+        "question": "Given that the point $(8,8)$ is on the graph of $y=\\frac 14f\\left(\\frac 12x\\right)$, there is one po...",
+        "ground_truth": "36",
+        "majority_answer": "36",
+        "num_valid": 3,
+        "correct": true
+      },
+      {
+        "question": "Bob can travel $m$ miles in $h$ hours on his bicycle. At this rate, how many hours would it take him...",
+        "ground_truth": "\\frac{h^2}{m}",
+        "majority_answer": "\\frac{h^2}{m}",
+        "num_valid": 7,
+        "correct": false
+      },
+      {
+        "question": "Given that the point $(4,7)$ is on the graph of $y=3f\\left(2x\\right)+1$, there is one point that mus...",
+        "ground_truth": "10",
+        "majority_answer": "11",
+        "num_valid": 5,
+        "correct": false
+      },
+      {
+        "question": "Find the domain of the function $f(x)=\\sqrt{\\sqrt{x^2-16}-3}$....",
+        "ground_truth": "(-\\infty,-5]\\cup[5,\\infty)",
+        "majority_answer": "(-\\infty, -5] \\cup [5, \\infty)",
+        "num_valid": 8,
+        "correct": false
+      },
+      {
+        "question": "Evaluate the infinite geometric series: $$1-\\frac{2}{7}+\\frac{4}{49}-\\frac{8}{343}+\\dots$$...",
+        "ground_truth": "\\frac{7}{9}",
+        "majority_answer": "\\frac{7}{9}",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "If $-6\\leq a \\leq -2$ and $3 \\leq b \\leq 5$, what is the greatest possible value of $\\displaystyle\\l...",
+        "ground_truth": "-\\frac{35}{9}",
+        "majority_answer": "-\\frac{323}{9}",
+        "num_valid": 6,
+        "correct": false
+      },
+      {
+        "question": "If we express $3x^2 + x - 4$ in the form $a(x - h)^2 + k$, then what is $k$?...",
+        "ground_truth": "-\\frac{49}{12}",
+        "majority_answer": "-\\frac{49}{12}",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "If $f(x) = x^3 - 6x^2 + 3x - 4$, $g(x) = x^3 + 5x^2 + 9x - 2$, then find the constant term of $f(g(x...",
+        "ground_truth": "-42",
+        "majority_answer": "-32",
+        "num_valid": 2,
+        "correct": false
+      },
+      {
+        "question": "You have two circles, one with radius $r$ and the other with radius $R$. You wish for the difference...",
+        "ground_truth": "\\frac{1}{2}",
+        "majority_answer": "0.5",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "Completely simplify and rationalize the denominator: $$\\frac{\\sqrt{160}}{\\sqrt{252}}\\times\\frac{\\sqr...",
+        "ground_truth": "\\frac{5\\sqrt{42}}{27}",
+        "majority_answer": "\\frac{5\\sqrt{42}}{27}",
+        "num_valid": 6,
+        "correct": false
+      },
+      {
+        "question": "Given that\n\n\\begin{align*}\n\\frac{1}{x}+\\frac{1}{y}&=5,\\\\\n3xy+x+y&=4,\n\\end{align*}\n\ncompute $x^2y+xy^...",
+        "ground_truth": "\\frac{5}{4}",
+        "majority_answer": "\\frac{5}{4}",
+        "num_valid": 8,
+        "correct": true
+      },
+      {
+        "question": "The sum of the product and the sum of two positive integers is $454$. Find the largest possible valu...",
+        "ground_truth": "33840",
+        "majority_answer": "51529",
+        "num_valid": 3,
+        "correct": false
+      },
+      {
+        "question": "Let $f(x)=\\frac{(x-2)^2-9}{3}$.\n\nThe equation $y=f(x)$ is graphed, and the $x$- and $y$-intercepts o...",
+        "ground_truth": "5",
+        "majority_answer": "5",
+        "num_valid": 6,
+        "correct": true
+      },
+      {
+        "question": "If $725x + 727y = 1500$ and $729x+ 731y = 1508$, what is the value of $x - y$ ?...",
+        "ground_truth": "-48",
+        "majority_answer": "-48",
+        "num_valid": 4,
+        "correct": true
+      },
+      {
+        "question": "Suppose that  $4^{a}=5$, $5^{b}=6$, $6^{c}=7,$ and  $7^{d}=8$. What is $a\\cdot b\\cdot c\\cdot d$?...",
+        "ground_truth": "\\frac{3}{2}",
+        "majority_answer": "\\frac{3}{2}",
+        "num_valid": 6,
+        "correct": true
+      }
+    ]
+  },
+  "model": "outputs/exp3_2_random",
+  "gpu_info": {
+    "gpu_0": {
+      "name": "NVIDIA H200",
+      "total_gb": 150.11,
+      "allocated_gb": 0.0,
+      "reserved_gb": 0.0,
+      "free_gb": 150.11
+    }
+  },
+  "_metadata": {
+    "timestamp": "2026-05-05T02:29:05.274037",
+    "hostname": "ubuntu-gpu-pod-vv-h200"
+  }
+}

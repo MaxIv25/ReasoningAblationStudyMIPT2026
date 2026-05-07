@@ -131,6 +131,25 @@ if [ "$RUN_ONLY" = "all" ] || [ "$RUN_ONLY" = "exp5_4" ]; then
     run_eval "exp5_4_dr_grpo_sft" "${PROJECT_ROOT}/outputs/exp5_4_dr_grpo_sft"
 fi
 
+# ── Exp 5.5: PRIME on SFT model ───────────────────────────
+if [ "$RUN_ONLY" = "all" ] || [ "$RUN_ONLY" = "exp5_5" ]; then
+    echo ""
+    echo "============================================"
+    echo "  Training: exp5_5_prime_sft"
+    echo "  Config:   ${PROJECT_ROOT}/configs/exp5_5_prime_sft.yaml"
+    echo "  Output:   ${PROJECT_ROOT}/outputs/exp5_5_prime_sft"
+    echo "============================================"
+    echo ""
+
+    python "${PROJECT_ROOT}/src/train_prime.py" \
+        --config "${PROJECT_ROOT}/configs/exp5_5_prime_sft.yaml" \
+        --data-dir "$DATA_DIR" \
+        --output-dir "${PROJECT_ROOT}/outputs/exp5_5_prime_sft" \
+        2>&1 | tee "${PROJECT_ROOT}/logs/prime.log"
+
+    run_eval "exp5_5_prime_sft" "${PROJECT_ROOT}/outputs/exp5_5_prime_sft"
+fi
+
 echo ""
 echo "============================================"
 echo "  All GRPO experiments complete!"

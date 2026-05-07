@@ -98,7 +98,7 @@ def format_reward(completions, log_metric=None, **kwargs):
     Check if the completion follows the expected reasoning format.
 
     Checks for:
-    - <think>...</think> block (reasoning trace)
+    - </think> closing tag (opening <think> is in prompt prefill)
     - \\boxed{} (final answer)
 
     Reward: 1.0 (both), 0.5 (one of two), 0.0 (neither).
@@ -110,7 +110,10 @@ def format_reward(completions, log_metric=None, **kwargs):
         content = completion[0]["content"] if isinstance(completion, list) else completion
         score = 0.0
 
-        has_think = bool(re.search(r"<think>.*?</think>", content, re.DOTALL))
+        # Check for </think> closing tag
+        # Note: <think> opening tag is in the prompt prefill (assistant message),
+        # so the completion only contains the closing </think> tag.
+        has_think = "</think>" in content
         has_boxed = "\\boxed{" in content
 
         if has_think:

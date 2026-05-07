@@ -1,0 +1,29 @@
+/data/users/maxiv25/opt_project/venv/lib/python3.11/site-packages/trl/generation/__init__.py:22: UserWarning: TRL currently supports vLLM versions from 0.11.0 to 0.18.0. You have version 0.19.1 installed. We recommend installing a supported version to avoid compatibility issues.
+  if is_vllm_available():
+/data/users/maxiv25/opt_project/venv/lib/python3.11/site-packages/trl/generation/vllm_client.py:40: UserWarning: TRL currently supports vLLM versions from 0.11.0 to 0.18.0. You have version 0.19.1 installed. We recommend installing a supported version to avoid compatibility issues.
+  if is_vllm_available():
+/data/users/maxiv25/opt_project/venv/lib/python3.11/site-packages/trl/generation/vllm_generation.py:36: UserWarning: TRL currently supports vLLM versions from 0.11.0 to 0.18.0. You have version 0.19.1 installed. We recommend installing a supported version to avoid compatibility issues.
+  if is_vllm_available():
+2026-05-04 21:01:21 [INFO] train_grpo: GRPO variant: grpo
+2026-05-04 21:01:21 [INFO] train_grpo: Model: outputs/exp2_1_full_ft
+2026-05-04 21:01:21 [INFO] train_grpo: Output: /data/users/maxiv25/opt_project/ReasoningAblationStudyMIPT2026/outputs/exp5_2_grpo_sft
+2026-05-04 21:01:22 [INFO] train_grpo: GPU info: {'gpu_0': {'name': 'NVIDIA H200', 'total_gb': 150.11, 'allocated_gb': 0.0, 'reserved_gb': 0.0, 'free_gb': 150.11}}
+2026-05-04 21:01:22 [INFO] train_grpo: SDPA config: flash=True, mem_efficient=True, math=DISABLED
+2026-05-04 21:01:22 [INFO] train_grpo: Loaded dataset: 20000 examples
+[transformers] warmup_ratio is deprecated and will be removed in v5.2. Use `warmup_steps` instead.
+2026-05-04 21:01:22 [INFO] train_grpo:   loss_type=grpo
+2026-05-04 21:01:22 [INFO] train_grpo:   scale_rewards=group
+2026-05-04 21:01:22 [INFO] train_grpo:   epsilon=0.2, epsilon_high=None
+2026-05-04 21:01:22 [INFO] train_grpo:   beta=0.0
+2026-05-04 21:01:22 [INFO] train_grpo:   num_generations=8
+2026-05-04 21:01:22 [INFO] train_grpo:   max_completion_length=16384
+2026-05-04 21:01:22 [INFO] train_grpo:   lr=5e-07
+Traceback (most recent call last):
+  File "/data/users/maxiv25/opt_project/ReasoningAblationStudyMIPT2026/src/train_grpo.py", line 317, in <module>
+    main()
+  File "/data/users/maxiv25/opt_project/ReasoningAblationStudyMIPT2026/src/train_grpo.py", line 309, in main
+    train(
+  File "/data/users/maxiv25/opt_project/ReasoningAblationStudyMIPT2026/src/train_grpo.py", line 255, in train
+    trainer = GRPOTrainer(
+              ^^^^^^^^^^^^
+TypeError: GRPOTrainer.__init__() got an unexpected keyword argument 'model_init_kwargs'
