@@ -93,19 +93,26 @@ def load_math_by_level(
         levels: dict mapping level (int) to desired sample count
         seed: random seed
     """
-    logger.info("Loading MATH train (hendrycks/competition_math)...")
-    try:
-        ds = load_dataset("hendrycks/competition_math", split="train")
-    except Exception:
-        # Alternative name
-        logger.info("Trying alternative dataset name: lighteval/MATH...")
-        ds = load_dataset("lighteval/MATH", "all", split="train")
+    logger.info("Loading MATH train (EleutherAI/hendrycks_math)...")
+    subjects = [
+        "algebra", "counting_and_probability", "geometry",
+        "intermediate_algebra", "number_theory", "prealgebra",
+        "precalculus",
+    ]
+    all_examples = []
+    for subj in subjects:
+        try:
+            ds_subj = load_dataset("EleutherAI/hendrycks_math", subj, split="train")
+            all_examples.extend(ds_subj)
+            logger.info(f"  Loaded {subj}: {len(ds_subj)} examples")
+        except Exception as e:
+            logger.warning(f"  Failed to load {subj}: {e}")
 
-    logger.info(f"  MATH raw: {len(ds)} examples")
+    logger.info(f"  MATH total: {len(all_examples)} examples")
 
     # Group by level
     by_level = {}
-    for example in ds:
+    for example in all_examples:
         level_str = example.get("level", "")
         # Parse "Level X" format
         match = re.search(r"(\d+)", str(level_str))
