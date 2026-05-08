@@ -131,7 +131,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
             prm_model_id,
             torch_dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        ).to(self.accelerator.device)
+        )  # stays on CPU
         self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
 
@@ -143,20 +143,25 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 prm_model_id,
                 torch_dtype=torch.bfloat16,
                 attn_implementation="sdpa",
-            ).to(self.accelerator.device)
+            )  # stays on CPU
             self.ref_model.eval()
             for p in self.ref_model.parameters():
                 p.requires_grad = False
+        else:
+            # Parent loaded ref to GPU — move to CPU for offload strategy
+            self.ref_model.to("cpu")
 
-        # PRM optimizer (separate from policy optimizer)
+        # PRM optimizer (params are on CPU; will be on GPU during step)
         self.prm_optimizer = torch.optim.AdamW(
             self.prm_model.parameters(),
             lr=self.prime_prm_lr,
             weight_decay=0.01,
         )
 
+        self._gpu_device = self.accelerator.device
         logger.info(f"PRIME config: beta={self.prime_beta}, baseline={self.prime_baseline_type}, "
                     f"prm_lr={self.prime_prm_lr}, online_filter={self.prime_online_filter}")
+        logger.info("PRIME memory strategy: PRM+ref on CPU, offloaded to GPU on demand")
 
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
         """Get per-token log-probs from a model (no grad)."""
@@ -167,23 +172,41 @@ class PrimeGRPOTrainer(GRPOTrainer):
             )
         return logps
 
+    def _move_to_gpu(self, model):
+        """Move model to GPU, return it."""
+        model.to(self._gpu_device)
+        return model
+
+    def _move_to_cpu(self, model):
+        """Move model back to CPU, free GPU cache."""
+        model.to("cpu")
+        torch.cuda.empty_cache()
+        return model
+
     def _compute_process_rewards(self, prompt_completion_ids, attention_mask,
                                   completion_mask, logits_to_keep, batch_size):
         """
         Compute token-level process rewards: r_φ(y_t) = β * [log π_φ(y_t) - log π_ref(y_t)]
-
-        Returns: tensor of shape (B, T) with per-token process rewards
+        Models are offloaded from CPU → GPU → CPU sequentially.
         """
-        # Forward PRM (no grad for reward extraction, grad only during PRM update)
-        prm_logps = self._get_token_logps(
-            self.prm_model, prompt_completion_ids, attention_mask,
-            logits_to_keep, batch_size=batch_size,
-        )
-        # Forward reference
-        ref_logps = self._get_token_logps(
-            self.ref_model, prompt_completion_ids, attention_mask,
-            logits_to_keep, batch_size=batch_size,
-        )
+        with torch.no_grad():
+            # PRM forward
+            self._move_to_gpu(self.prm_model)
+            self.prm_model.eval()
+            prm_logps = self._get_token_logps(
+                self.prm_model, prompt_completion_ids, attention_mask,
+                logits_to_keep, batch_size=batch_size,
+            )
+            self._move_to_cpu(self.prm_model)
+
+            # Ref forward
+            self._move_to_gpu(self.ref_model)
+            ref_logps = self._get_token_logps(
+                self.ref_model, prompt_completion_ids, attention_mask,
+                logits_to_keep, batch_size=batch_size,
+            )
+            self._move_to_cpu(self.ref_model)
+
         # Token-level process rewards
         process_rewards = self.prime_beta * (prm_logps - ref_logps)  # (B, T)
         # Mask padding
@@ -221,13 +244,13 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         Loss = BCE(sigmoid(β * Σ_t [log π_φ(y_t) - log π_ref(y_t)]), label)
         """
+        # Move PRM to GPU for update
+        self._move_to_gpu(self.prm_model)
         self.prm_model.train()
-        # Free cached memory before PRM update to avoid OOM
-        torch.cuda.empty_cache()
 
-        # Use batch_size=1 for PRM forward to minimize peak memory:
-        # full generation batch (e.g. 64 seqs × 16K tokens) with gradients
-        # is too large to fit alongside policy + ref model.
+        # Move ref to GPU for log-ratio computation
+        self._move_to_gpu(self.ref_model)
+
         prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
@@ -257,6 +280,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
             prm_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
+
+        # Move both back to CPU
+        self._move_to_cpu(self.ref_model)
+        self._move_to_cpu(self.prm_model)
 
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["prime/prm_loss"].append(prm_loss.item())
