@@ -510,8 +510,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # outcome_component is (B,), needs to be (B, 1) for broadcasting
         dense_advantages = process_returns_centered + outcome_component.unsqueeze(1)
 
-        # Replace parent's advantages with our dense (B, T) advantages
-        output["advantages"] = dense_advantages
+        # Collapse dense (B, T) advantages to (B,) scalar per sample
+        # Weighted mean over completion tokens — preserves PRIME process reward signal
+        # while being compatible with Liger kernel's scalar advantage requirement
+        seq_advantages = (dense_advantages * completion_mask).sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1)
+        output["advantages"] = seq_advantages
 
         # ── Logging ──
         self._metrics[mode]["prime/process_reward_mean"].append(
@@ -671,7 +674,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
                 "vllm_group_port": grpo_cfg.get("vllm_group_port", 51216),
             }
         ),
-        use_liger_kernel=False,  # PRIME uses (B,T) dense advantages; Liger expects (B,) scalar
+        use_liger_kernel=True,
         reward_weights=[1.0, 0.1],
         model_init_kwargs={
             "torch_dtype": "bfloat16",
