@@ -15,6 +15,11 @@ import os
 import sys
 from pathlib import Path
 
+# ── Force accelerator to use only cuda:0 for policy model ─────
+# When CUDA_VISIBLE_DEVICES exposes 2 GPUs (policy + PRM),
+# we must pin the trainer to cuda:0 so vLLM NCCL sync works.
+os.environ.setdefault("ACCELERATE_TORCH_DEVICE", "cuda:0")
+
 # ── FLA/TileLang workaround for H200 (Hopper) ────────────────
 os.environ["FLA_TILELANG"] = "0"
 
