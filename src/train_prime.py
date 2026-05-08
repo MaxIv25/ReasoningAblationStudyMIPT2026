@@ -252,21 +252,30 @@ class PrimeGRPOTrainer(GRPOTrainer):
         """
         Online PRM update with BCE loss on outcome labels.
 
-        Memory strategy: all inputs arrive on CPU. Load PRM+ref to GPU,
-        move minimal tensors to GPU, forward+backward, optimizer step,
-        then move everything back to CPU.
+        Memory strategy: all inputs arrive on CPU.
+        1. Offload policy model to free ~8GB (model + optimizer states)
+        2. Load ref to GPU → no_grad forward → cache ref_logps → offload ref
+        3. Load PRM + optimizer to GPU → forward with grads → backward → step
+        4. Offload PRM → restore policy model
 
-        For 0.8B model: PRM+ref = ~3.2GB, AdamW states = ~6.4GB.
-        PRM forward+backward with gradient checkpointing = ~30-50GB.
-        Total = ~40-60GB on top of ~9GB baseline (policy + optimizer).
+        Never have more than one model on GPU at a time during forward passes.
         """
-        # ── Load PRM + ref + optimizer to GPU ──
-        self._move_to_gpu(self.prm_model)
-        self.prm_model.train()
-        self._move_to_gpu(self.ref_model)
-        self._move_optimizer_states(self._gpu_device)
+        import gc
 
-        # Move only needed tensors to GPU
+        # ── Step 0: Offload policy model to free GPU for PRM update ──
+        # Policy model (~1.6GB) + optimizer states (~6.4GB) = ~8GB
+        policy_was_training = self.model.training
+        policy_device = next(self.model.parameters()).device
+        self.model.to("cpu")
+        # Move policy optimizer states to CPU
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor) and v.is_cuda:
+                    state[k] = v.cpu()
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Move input tensors to GPU
         pci_gpu = prompt_completion_ids.to(self._gpu_device)
         am_gpu = attention_mask.to(self._gpu_device)
         cm_gpu = completion_mask.to(self._gpu_device)
@@ -274,15 +283,25 @@ class PrimeGRPOTrainer(GRPOTrainer):
         prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
-            prm_logps, _ = self._get_per_token_logps_and_entropies(
-                self.prm_model, pci_gpu, am_gpu,
-                logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
-            )
+            # ── Ref forward (no_grad, ref only on GPU) ──
+            self._move_to_gpu(self.ref_model)
             with torch.no_grad():
                 ref_logps, _ = self._get_per_token_logps_and_entropies(
                     self.ref_model, pci_gpu, am_gpu,
                     logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
                 )
+            ref_logps = ref_logps.detach()  # ensure no graph
+            self._move_to_cpu(self.ref_model)
+
+            # ── PRM forward (with grads, PRM only on GPU) ──
+            self._move_to_gpu(self.prm_model)
+            self.prm_model.train()
+            self._move_optimizer_states(self._gpu_device)
+
+            prm_logps, _ = self._get_per_token_logps_and_entropies(
+                self.prm_model, pci_gpu, am_gpu,
+                logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
+            )
 
             log_ratio = (prm_logps - ref_logps) * cm_gpu
             seq_score = self.prime_beta * log_ratio.sum(dim=1)
@@ -294,16 +313,26 @@ class PrimeGRPOTrainer(GRPOTrainer):
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
 
+            # Clean up per-epoch intermediates
+            del prm_logps, ref_logps, log_ratio, seq_score
+
+            # ── Offload PRM after step ──
+            self._move_optimizer_states("cpu")
+            self._move_to_cpu(self.prm_model)
+
         prm_loss_val = prm_loss.item()
 
         # ── Clean up GPU tensors ──
-        del pci_gpu, am_gpu, cm_gpu, labels, prm_logps, ref_logps
-        del log_ratio, seq_score, prm_loss
+        del pci_gpu, am_gpu, cm_gpu, labels, prm_loss
 
-        # ── Move PRM + ref + optimizer back to CPU ──
-        self._move_optimizer_states("cpu")
-        self._move_to_cpu(self.ref_model)
-        self._move_to_cpu(self.prm_model)
+        # ── Restore policy model to GPU ──
+        self.model.to(policy_device)
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(policy_device)
+        if policy_was_training:
+            self.model.train()
 
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["prime/prm_loss"].append(prm_loss_val)
