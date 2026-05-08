@@ -17,4 +17,4 @@ prime:
   advantage_baseline: "rloo"  # rloo | group_mean | truncated_mean | dpo_z
   online_filter: true         # Skip prompts where all/none correct
   gamma: 1.0                  # Discount for process returns
-  prm_device: "cuda:0"        # Dedicated GPU for PRM+ref (separate from policy GPU)
+  prm_device: "cuda:1"        # Dedicated GPU for PRM+ref (policy is always cuda:0)
