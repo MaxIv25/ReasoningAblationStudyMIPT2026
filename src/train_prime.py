@@ -253,21 +253,24 @@ class PrimeGRPOTrainer(GRPOTrainer):
         Online PRM update with BCE loss on outcome labels.
 
         Memory strategy: all inputs arrive on CPU.
-        1. Offload policy model to free ~8GB (model + optimizer states)
-        2. Load ref to GPU → no_grad forward → cache ref_logps → offload ref
-        3. Load PRM + optimizer to GPU → forward with grads → backward → step
-        4. Offload PRM → restore policy model
+        1. Offload policy model to free ~8GB
+        2. Load ref → no_grad forward all samples (batch=1) → cache ref_logps → offload ref
+        3. Load PRM → per-sample forward WITH grads → compute loss → backward
+           immediately → free graph. This avoids accumulating 64 graphs.
+        4. Clip grads → optimizer step → offload PRM → restore policy
 
-        Never have more than one model on GPU at a time during forward passes.
+        Peak GPU during PRM forward: ~1.6GB (PRM) + ~3-5GB (one sample activations
+        for 16K seq × 248K vocab with gradient checkpointing) = ~5-7GB.
         """
         import gc
+        from trl.trainer.grpo_trainer import selective_log_softmax
 
-        # ── Step 0: Offload policy model to free GPU for PRM update ──
-        # Policy model (~1.6GB) + optimizer states (~6.4GB) = ~8GB
+        N = prompt_completion_ids.size(0)  # total samples (e.g. 64)
+
+        # ── Step 0: Offload policy model to free GPU ──
         policy_was_training = self.model.training
         policy_device = next(self.model.parameters()).device
         self.model.to("cpu")
-        # Move policy optimizer states to CPU
         for state in self.optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor) and v.is_cuda:
@@ -280,50 +283,65 @@ class PrimeGRPOTrainer(GRPOTrainer):
         am_gpu = attention_mask.to(self._gpu_device)
         cm_gpu = completion_mask.to(self._gpu_device)
         labels = (outcome_rewards > 0.5).float().to(self._gpu_device)
-        prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
-            # ── Ref forward (no_grad, ref only on GPU) ──
+            # ── Ref forward: all samples, no_grad, batch=1 ──
             self._move_to_gpu(self.ref_model)
+            all_ref_logps = []
             with torch.no_grad():
-                ref_logps, _ = self._get_per_token_logps_and_entropies(
-                    self.ref_model, pci_gpu, am_gpu,
-                    logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
-                )
-            ref_logps = ref_logps.detach()  # ensure no graph
+                for i in range(N):
+                    inp = pci_gpu[i:i+1]
+                    mask = am_gpu[i:i+1]
+                    logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
+                    logits = logits[:, :-1, :][:, -logits_to_keep:, :]
+                    logits.div_(self.temperature)
+                    comp_ids = inp[:, -logits_to_keep:]
+                    logps = selective_log_softmax(logits, comp_ids)
+                    all_ref_logps.append(logps)
+                    del logits, logps
+            ref_logps = torch.cat(all_ref_logps, dim=0).detach()
+            del all_ref_logps
             self._move_to_cpu(self.ref_model)
 
-            # ── PRM forward (with grads, PRM only on GPU) ──
+            # ── PRM forward with per-sample gradient accumulation ──
             self._move_to_gpu(self.prm_model)
             self.prm_model.train()
             self._move_optimizer_states(self._gpu_device)
-
-            prm_logps, _ = self._get_per_token_logps_and_entropies(
-                self.prm_model, pci_gpu, am_gpu,
-                logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
-            )
-
-            log_ratio = (prm_logps - ref_logps) * cm_gpu
-            seq_score = self.prime_beta * log_ratio.sum(dim=1)
-
-            prm_loss = F.binary_cross_entropy_with_logits(seq_score, labels)
-
             self.prm_optimizer.zero_grad()
-            prm_loss.backward()
+
+            total_loss = 0.0
+            for i in range(N):
+                inp = pci_gpu[i:i+1]
+                mask = am_gpu[i:i+1]
+                logits = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
+                logits = logits[:, :-1, :][:, -logits_to_keep:, :]
+                logits.div_(self.temperature)
+                comp_ids = inp[:, -logits_to_keep:]
+                prm_logps_i = selective_log_softmax(logits, comp_ids)
+
+                # Per-sample loss
+                log_ratio_i = (prm_logps_i - ref_logps[i:i+1]) * cm_gpu[i:i+1]
+                seq_score_i = self.prime_beta * log_ratio_i.sum(dim=1)
+                loss_i = F.binary_cross_entropy_with_logits(seq_score_i, labels[i:i+1])
+                # Scale by 1/N for mean reduction across samples
+                (loss_i / N).backward()
+                total_loss += loss_i.item()
+
+                # Free graph immediately
+                del logits, prm_logps_i, log_ratio_i, seq_score_i, loss_i
+
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
 
-            # Clean up per-epoch intermediates
-            del prm_logps, ref_logps, log_ratio, seq_score
+            prm_loss_val = total_loss / N
 
-            # ── Offload PRM after step ──
+            # Clean up
+            del ref_logps
             self._move_optimizer_states("cpu")
             self._move_to_cpu(self.prm_model)
 
-        prm_loss_val = prm_loss.item()
-
         # ── Clean up GPU tensors ──
-        del pci_gpu, am_gpu, cm_gpu, labels, prm_loss
+        del pci_gpu, am_gpu, cm_gpu, labels
 
         # ── Restore policy model to GPU ──
         self.model.to(policy_device)
