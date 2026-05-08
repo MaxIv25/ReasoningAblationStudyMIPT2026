@@ -485,7 +485,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
         process_baseline = baseline_fn(total_process, num_generations, **baseline_kwargs)
 
         # Token-level: subtract per-sample baseline, then compute returns
-        process_centered = process_rewards - (process_baseline / completion_mask.sum(dim=1, keepdim=True).clamp(min=1))
+        process_centered = process_rewards - (process_baseline.unsqueeze(1) / completion_mask.sum(dim=1, keepdim=True).clamp(min=1))
         process_returns_centered = self._compute_process_returns(process_centered, completion_mask)
 
         # Normalize process component
