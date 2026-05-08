@@ -118,6 +118,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
             raise ValueError(f"Unknown baseline: {self.prime_baseline_type}. "
                            f"Choose from {list(BASELINE_FUNCS.keys())}")
 
+        # Dedicated GPU for PRM + ref (separate from policy GPU)
+        self.prm_device = torch.device(prime_cfg.get("prm_device", "cuda:2"))
+        self.policy_device = self.accelerator.device
+
         # Load PRM — separate copy of SFT model, trainable
         model_id = kwargs.get("model", None)
         if isinstance(model_id, str):
@@ -126,42 +130,41 @@ class PrimeGRPOTrainer(GRPOTrainer):
             from trl.trainer.utils import get_config_model_id
             prm_model_id = get_config_model_id(self.model.config)
 
-        logger.info(f"Loading PRM from: {prm_model_id}")
+        logger.info(f"Loading PRM from: {prm_model_id} -> {self.prm_device}")
         self.prm_model = AutoModelForCausalLM.from_pretrained(
             prm_model_id,
             torch_dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        )  # stays on CPU
+        ).to(self.prm_device)
         self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
 
         # Ensure reference model exists (even with beta=0)
         # We need it for log-ratio computation
         if self.ref_model is None:
-            logger.info("Loading reference model for PRIME (beta was 0, but PRIME needs ref)")
+            logger.info(f"Loading reference model for PRIME -> {self.prm_device}")
             self.ref_model = AutoModelForCausalLM.from_pretrained(
                 prm_model_id,
                 torch_dtype=torch.bfloat16,
                 attn_implementation="sdpa",
-            )  # stays on CPU
+            ).to(self.prm_device)
             self.ref_model.eval()
             for p in self.ref_model.parameters():
                 p.requires_grad = False
         else:
-            # Parent loaded ref to GPU — move to CPU for offload strategy
-            self.ref_model.to("cpu")
+            # Parent loaded ref to policy GPU — move to PRM device
+            self.ref_model.to(self.prm_device)
 
-        # PRM optimizer (params are on CPU; will be on GPU during step)
+        # PRM optimizer
         self.prm_optimizer = torch.optim.AdamW(
             self.prm_model.parameters(),
             lr=self.prime_prm_lr,
             weight_decay=0.01,
         )
 
-        self._gpu_device = self.accelerator.device
         logger.info(f"PRIME config: beta={self.prime_beta}, baseline={self.prime_baseline_type}, "
                     f"prm_lr={self.prime_prm_lr}, online_filter={self.prime_online_filter}")
-        logger.info("PRIME memory strategy: PRM+ref on CPU, offloaded to GPU on demand")
+        logger.info(f"PRIME memory: policy on {self.policy_device}, PRM+ref on {self.prm_device}")
 
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
         """Get per-token log-probs from a model (no grad)."""
@@ -172,46 +175,31 @@ class PrimeGRPOTrainer(GRPOTrainer):
             )
         return logps
 
-    def _move_to_gpu(self, model):
-        """Move model to GPU, return it."""
-        model.to(self._gpu_device)
-        return model
-
-    def _move_to_cpu(self, model):
-        """Move model back to CPU, free GPU cache."""
-        model.to("cpu")
-        torch.cuda.empty_cache()
-        return model
-
     def _compute_process_rewards(self, prompt_completion_ids, attention_mask,
                                   completion_mask, logits_to_keep, batch_size):
         """
         Compute token-level process rewards: r_φ(y_t) = β * [log π_φ(y_t) - log π_ref(y_t)]
-        Models are offloaded from CPU → GPU → CPU sequentially.
+        PRM and ref live on prm_device; tensors are transferred as needed.
         """
+        # Move inputs to PRM device
+        pci = prompt_completion_ids.to(self.prm_device)
+        am = attention_mask.to(self.prm_device)
+
         with torch.no_grad():
-            # PRM forward
-            self._move_to_gpu(self.prm_model)
             self.prm_model.eval()
             prm_logps = self._get_token_logps(
-                self.prm_model, prompt_completion_ids, attention_mask,
+                self.prm_model, pci, am,
                 logits_to_keep, batch_size=batch_size,
             )
-            self._move_to_cpu(self.prm_model)
-
-            # Ref forward
-            self._move_to_gpu(self.ref_model)
             ref_logps = self._get_token_logps(
-                self.ref_model, prompt_completion_ids, attention_mask,
+                self.ref_model, pci, am,
                 logits_to_keep, batch_size=batch_size,
             )
-            self._move_to_cpu(self.ref_model)
 
-        # Token-level process rewards
-        process_rewards = self.prime_beta * (prm_logps - ref_logps)  # (B, T)
-        # Mask padding
-        process_rewards = process_rewards * completion_mask
-        return process_rewards, prm_logps, ref_logps
+        # Compute on PRM device, then move result to policy device
+        process_rewards = self.prime_beta * (prm_logps - ref_logps)
+        process_rewards = (process_rewards * completion_mask.to(self.prm_device)).to(self.policy_device)
+        return process_rewards, prm_logps.to(self.policy_device), ref_logps.to(self.policy_device)
 
     def _compute_process_returns(self, process_rewards, completion_mask):
         """
@@ -241,49 +229,38 @@ class PrimeGRPOTrainer(GRPOTrainer):
                      logits_to_keep, outcome_rewards, batch_size):
         """
         Online PRM update with BCE loss on outcome labels.
-
-        Loss = BCE(sigmoid(β * Σ_t [log π_φ(y_t) - log π_ref(y_t)]), label)
+        Runs entirely on prm_device.
         """
-        # Move PRM to GPU for update
-        self._move_to_gpu(self.prm_model)
         self.prm_model.train()
 
-        # Move ref to GPU for log-ratio computation
-        self._move_to_gpu(self.ref_model)
+        # Move inputs to PRM device
+        pci = prompt_completion_ids.to(self.prm_device)
+        am = attention_mask.to(self.prm_device)
+        cm = completion_mask.to(self.prm_device)
+        labels = (outcome_rewards > 0.5).float().to(self.prm_device)
 
         prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
-            # Forward PRM with gradients
             prm_logps, _ = self._get_per_token_logps_and_entropies(
-                self.prm_model, prompt_completion_ids, attention_mask,
+                self.prm_model, pci, am,
                 logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
             )
-            # Reference (no grad, already frozen)
             with torch.no_grad():
                 ref_logps, _ = self._get_per_token_logps_and_entropies(
-                    self.ref_model, prompt_completion_ids, attention_mask,
+                    self.ref_model, pci, am,
                     logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
                 )
 
-            # Sequence-level score: β * Σ_t (logp_prm - logp_ref)
-            log_ratio = (prm_logps - ref_logps) * completion_mask
-            seq_score = self.prime_beta * log_ratio.sum(dim=1)  # (B,)
+            log_ratio = (prm_logps - ref_logps) * cm
+            seq_score = self.prime_beta * log_ratio.sum(dim=1)
 
-            # Binary labels from outcome rewards (1.0 = correct, 0.0 = incorrect)
-            labels = (outcome_rewards > 0.5).float()
-
-            # BCE loss
             prm_loss = F.binary_cross_entropy_with_logits(seq_score, labels)
 
             self.prm_optimizer.zero_grad()
             prm_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
-
-        # Move both back to CPU
-        self._move_to_cpu(self.ref_model)
-        self._move_to_cpu(self.prm_model)
 
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["prime/prm_loss"].append(prm_loss.item())
