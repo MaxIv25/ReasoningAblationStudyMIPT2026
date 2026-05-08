@@ -132,6 +132,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
             torch_dtype=torch.bfloat16,
             attn_implementation="sdpa",
         ).to(self.accelerator.device)
+        self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
 
         # Ensure reference model exists (even with beta=0)
@@ -221,18 +222,25 @@ class PrimeGRPOTrainer(GRPOTrainer):
         Loss = BCE(sigmoid(β * Σ_t [log π_φ(y_t) - log π_ref(y_t)]), label)
         """
         self.prm_model.train()
+        # Free cached memory before PRM update to avoid OOM
+        torch.cuda.empty_cache()
+
+        # Use batch_size=1 for PRM forward to minimize peak memory:
+        # full generation batch (e.g. 64 seqs × 16K tokens) with gradients
+        # is too large to fit alongside policy + ref model.
+        prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
             # Forward PRM with gradients
             prm_logps, _ = self._get_per_token_logps_and_entropies(
                 self.prm_model, prompt_completion_ids, attention_mask,
-                logits_to_keep, batch_size=batch_size, compute_entropy=False,
+                logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
             )
             # Reference (no grad, already frozen)
             with torch.no_grad():
                 ref_logps, _ = self._get_per_token_logps_and_entropies(
                     self.ref_model, prompt_completion_ids, attention_mask,
-                    logits_to_keep, batch_size=batch_size, compute_entropy=False,
+                    logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
                 )
 
             # Sequence-level score: β * Σ_t (logp_prm - logp_ref)
