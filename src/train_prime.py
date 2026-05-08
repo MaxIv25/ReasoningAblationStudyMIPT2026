@@ -15,12 +15,8 @@ import os
 import sys
 from pathlib import Path
 
-# ── Force accelerator to use only cuda:0 for policy model ─────
-# When CUDA_VISIBLE_DEVICES exposes 2 GPUs (policy + PRM),
-# we must pin the trainer to cuda:0 so vLLM NCCL sync works.
-os.environ.setdefault("ACCELERATE_TORCH_DEVICE", "cuda:0")
-
 # ── FLA/TileLang workaround for H200 (Hopper) ────────────────
+
 os.environ["FLA_TILELANG"] = "0"
 
 import torch
@@ -123,11 +119,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
             raise ValueError(f"Unknown baseline: {self.prime_baseline_type}. "
                            f"Choose from {list(BASELINE_FUNCS.keys())}")
 
-        # Dedicated GPU for PRM + ref (separate from policy GPU)
-        self.prm_device = torch.device(prime_cfg.get("prm_device", "cuda:2"))
-        self.policy_device = self.accelerator.device
+        self._gpu_device = self.accelerator.device
 
         # Load PRM — separate copy of SFT model, trainable
+        # Stays on CPU (~1.6GB RAM for 0.8B), loaded to GPU on demand
         model_id = kwargs.get("model", None)
         if isinstance(model_id, str):
             prm_model_id = model_id
@@ -135,32 +130,33 @@ class PrimeGRPOTrainer(GRPOTrainer):
             from trl.trainer.utils import get_config_model_id
             prm_model_id = get_config_model_id(self.model.config)
 
-        logger.info(f"Loading PRM from: {prm_model_id} -> {self.prm_device}")
+        logger.info(f"Loading PRM from: {prm_model_id} (CPU offload)")
         self.prm_model = AutoModelForCausalLM.from_pretrained(
             prm_model_id,
             torch_dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        ).to(self.prm_device)
+        )  # stays on CPU
         self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
 
         # Ensure reference model exists (even with beta=0)
-        # We need it for log-ratio computation
+        # Stays on CPU (~1.6GB RAM), loaded to GPU on demand
         if self.ref_model is None:
-            logger.info(f"Loading reference model for PRIME -> {self.prm_device}")
+            logger.info("Loading reference model for PRIME (CPU offload)")
             self.ref_model = AutoModelForCausalLM.from_pretrained(
                 prm_model_id,
                 torch_dtype=torch.bfloat16,
                 attn_implementation="sdpa",
-            ).to(self.prm_device)
+            )  # stays on CPU
             self.ref_model.eval()
             for p in self.ref_model.parameters():
                 p.requires_grad = False
         else:
-            # Parent loaded ref to policy GPU — move to PRM device
-            self.ref_model.to(self.prm_device)
+            # Parent loaded ref to GPU — move to CPU for offload
+            self.ref_model.to("cpu")
 
-        # PRM optimizer
+        # PRM optimizer (AdamW, per original PRIME/veRL)
+        # States are lazily initialized on first step; managed via _move helpers
         self.prm_optimizer = torch.optim.AdamW(
             self.prm_model.parameters(),
             lr=self.prime_prm_lr,
@@ -169,7 +165,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         logger.info(f"PRIME config: beta={self.prime_beta}, baseline={self.prime_baseline_type}, "
                     f"prm_lr={self.prime_prm_lr}, online_filter={self.prime_online_filter}")
-        logger.info(f"PRIME memory: policy on {self.policy_device}, PRM+ref on {self.prm_device}")
+        logger.info(f"PRIME memory: PRM+ref on CPU (~3.2GB RAM), GPU offload on demand")
 
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
         """Get per-token log-probs from a model (no grad)."""
@@ -180,31 +176,52 @@ class PrimeGRPOTrainer(GRPOTrainer):
             )
         return logps
 
+    def _move_to_gpu(self, model):
+        """Move model to GPU."""
+        model.to(self._gpu_device)
+        return model
+
+    def _move_to_cpu(self, model):
+        """Move model to CPU and free GPU cache."""
+        model.to("cpu")
+        torch.cuda.empty_cache()
+        return model
+
+    def _move_optimizer_states(self, device):
+        """Move AdamW optimizer states to target device."""
+        for state in self.prm_optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+
     def _compute_process_rewards(self, prompt_completion_ids, attention_mask,
                                   completion_mask, logits_to_keep, batch_size):
         """
         Compute token-level process rewards: r_φ(y_t) = β * [log π_φ(y_t) - log π_ref(y_t)]
-        PRM and ref live on prm_device; tensors are transferred as needed.
+        PRM and ref offloaded from CPU → GPU → CPU sequentially (never both on GPU).
         """
-        # Move inputs to PRM device
-        pci = prompt_completion_ids.to(self.prm_device)
-        am = attention_mask.to(self.prm_device)
-
         with torch.no_grad():
+            # PRM forward
+            self._move_to_gpu(self.prm_model)
             self.prm_model.eval()
             prm_logps = self._get_token_logps(
-                self.prm_model, pci, am,
+                self.prm_model, prompt_completion_ids, attention_mask,
                 logits_to_keep, batch_size=batch_size,
             )
-            ref_logps = self._get_token_logps(
-                self.ref_model, pci, am,
-                logits_to_keep, batch_size=batch_size,
-            )
+            self._move_to_cpu(self.prm_model)
 
-        # Compute on PRM device, then move result to policy device
+            # Ref forward
+            self._move_to_gpu(self.ref_model)
+            ref_logps = self._get_token_logps(
+                self.ref_model, prompt_completion_ids, attention_mask,
+                logits_to_keep, batch_size=batch_size,
+            )
+            self._move_to_cpu(self.ref_model)
+
+        # Token-level process rewards
         process_rewards = self.prime_beta * (prm_logps - ref_logps)
-        process_rewards = (process_rewards * completion_mask.to(self.prm_device)).to(self.policy_device)
-        return process_rewards, prm_logps.to(self.policy_device), ref_logps.to(self.policy_device)
+        process_rewards = process_rewards * completion_mask
+        return process_rewards, prm_logps, ref_logps
 
     def _compute_process_returns(self, process_rewards, completion_mask):
         """
@@ -230,34 +247,50 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 returns[:, t] = running
         return returns
 
-    def _update_prm(self, prompt_completion_ids, attention_mask, completion_mask,
-                     logits_to_keep, outcome_rewards, batch_size):
+    def _update_prm(self, output, prompt_completion_ids, attention_mask,
+                     completion_mask, logits_to_keep, outcome_rewards, batch_size):
         """
         Online PRM update with BCE loss on outcome labels.
-        Runs entirely on prm_device.
+
+        Memory strategy: offload output dict to CPU → free GPU → load PRM+ref
+        to GPU → forward+backward → optimizer step → move PRM+ref+optimizer
+        back to CPU → restore output to GPU.
+
+        For 0.8B model: PRM+ref = ~3.2GB, AdamW states = ~6.4GB.
+        Output dict tensors = few MB. Total CPU overhead: ~10GB.
         """
+        # ── Offload output tensors to CPU to free GPU for PRM update ──
+        output_cpu = {}
+        for k, v in output.items():
+            if isinstance(v, torch.Tensor) and v.is_cuda:
+                output_cpu[k] = v.cpu()
+            else:
+                output_cpu[k] = v
+        # Clear references and GPU cache
+        output.clear()
+        torch.cuda.empty_cache()
+
+        # ── Load PRM + ref to GPU ──
+        self._move_to_gpu(self.prm_model)
         self.prm_model.train()
+        self._move_to_gpu(self.ref_model)
+        self._move_optimizer_states(self._gpu_device)
 
-        # Move inputs to PRM device
-        pci = prompt_completion_ids.to(self.prm_device)
-        am = attention_mask.to(self.prm_device)
-        cm = completion_mask.to(self.prm_device)
-        labels = (outcome_rewards > 0.5).float().to(self.prm_device)
-
+        labels = (outcome_rewards > 0.5).float()
         prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
             prm_logps, _ = self._get_per_token_logps_and_entropies(
-                self.prm_model, pci, am,
+                self.prm_model, prompt_completion_ids, attention_mask,
                 logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
             )
             with torch.no_grad():
                 ref_logps, _ = self._get_per_token_logps_and_entropies(
-                    self.ref_model, pci, am,
+                    self.ref_model, prompt_completion_ids, attention_mask,
                     logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
                 )
 
-            log_ratio = (prm_logps - ref_logps) * cm
+            log_ratio = (prm_logps - ref_logps) * completion_mask
             seq_score = self.prime_beta * log_ratio.sum(dim=1)
 
             prm_loss = F.binary_cross_entropy_with_logits(seq_score, labels)
@@ -266,6 +299,18 @@ class PrimeGRPOTrainer(GRPOTrainer):
             prm_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
+
+        # ── Move PRM + ref + optimizer back to CPU ──
+        self._move_optimizer_states("cpu")
+        self._move_to_cpu(self.ref_model)
+        self._move_to_cpu(self.prm_model)
+
+        # ── Restore output tensors to GPU ──
+        for k, v in output_cpu.items():
+            if isinstance(v, torch.Tensor):
+                output[k] = v.to(self._gpu_device)
+            else:
+                output[k] = v
 
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["prime/prm_loss"].append(prm_loss.item())
@@ -326,9 +371,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
             )
 
         # ── Step 3: Online PRM update ──
+        # _update_prm offloads output to CPU, does PRM update on GPU,
+        # then restores output — manages GPU memory automatically
         if mode == "train":
             self._update_prm(
-                prompt_completion_ids, attention_mask, completion_mask,
+                output, prompt_completion_ids, attention_mask, completion_mask,
                 logits_to_keep, outcome_rewards, batch_size,
             )
 
