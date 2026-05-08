@@ -671,7 +671,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
                 "vllm_group_port": grpo_cfg.get("vllm_group_port", 51216),
             }
         ),
-        use_liger_kernel=True,
+        use_liger_kernel=False,  # PRIME uses (B,T) dense advantages; Liger expects (B,) scalar
         reward_weights=[1.0, 0.1],
         model_init_kwargs={
             "torch_dtype": "bfloat16",
