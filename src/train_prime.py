@@ -247,50 +247,44 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 returns[:, t] = running
         return returns
 
-    def _update_prm(self, output, prompt_completion_ids, attention_mask,
+    def _update_prm(self, prompt_completion_ids, attention_mask,
                      completion_mask, logits_to_keep, outcome_rewards, batch_size):
         """
         Online PRM update with BCE loss on outcome labels.
 
-        Memory strategy: offload output dict to CPU → free GPU → load PRM+ref
-        to GPU → forward+backward → optimizer step → move PRM+ref+optimizer
-        back to CPU → restore output to GPU.
+        Memory strategy: all inputs arrive on CPU. Load PRM+ref to GPU,
+        move minimal tensors to GPU, forward+backward, optimizer step,
+        then move everything back to CPU.
 
         For 0.8B model: PRM+ref = ~3.2GB, AdamW states = ~6.4GB.
-        Output dict tensors = few MB. Total CPU overhead: ~10GB.
+        PRM forward+backward with gradient checkpointing = ~30-50GB.
+        Total = ~40-60GB on top of ~9GB baseline (policy + optimizer).
         """
-        # ── Offload output tensors to CPU to free GPU for PRM update ──
-        output_cpu = {}
-        for k, v in output.items():
-            if isinstance(v, torch.Tensor) and v.is_cuda:
-                output_cpu[k] = v.cpu()
-            else:
-                output_cpu[k] = v
-        # Clear references and GPU cache
-        output.clear()
-        torch.cuda.empty_cache()
-
-        # ── Load PRM + ref to GPU ──
+        # ── Load PRM + ref + optimizer to GPU ──
         self._move_to_gpu(self.prm_model)
         self.prm_model.train()
         self._move_to_gpu(self.ref_model)
         self._move_optimizer_states(self._gpu_device)
 
-        labels = (outcome_rewards > 0.5).float()
+        # Move only needed tensors to GPU
+        pci_gpu = prompt_completion_ids.to(self._gpu_device)
+        am_gpu = attention_mask.to(self._gpu_device)
+        cm_gpu = completion_mask.to(self._gpu_device)
+        labels = (outcome_rewards > 0.5).float().to(self._gpu_device)
         prm_batch_size = 1
 
         for _ in range(self.prime_prm_update_epochs):
             prm_logps, _ = self._get_per_token_logps_and_entropies(
-                self.prm_model, prompt_completion_ids, attention_mask,
+                self.prm_model, pci_gpu, am_gpu,
                 logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
             )
             with torch.no_grad():
                 ref_logps, _ = self._get_per_token_logps_and_entropies(
-                    self.ref_model, prompt_completion_ids, attention_mask,
+                    self.ref_model, pci_gpu, am_gpu,
                     logits_to_keep, batch_size=prm_batch_size, compute_entropy=False,
                 )
 
-            log_ratio = (prm_logps - ref_logps) * completion_mask
+            log_ratio = (prm_logps - ref_logps) * cm_gpu
             seq_score = self.prime_beta * log_ratio.sum(dim=1)
 
             prm_loss = F.binary_cross_entropy_with_logits(seq_score, labels)
@@ -300,31 +294,33 @@ class PrimeGRPOTrainer(GRPOTrainer):
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
 
+        prm_loss_val = prm_loss.item()
+
+        # ── Clean up GPU tensors ──
+        del pci_gpu, am_gpu, cm_gpu, labels, prm_logps, ref_logps
+        del log_ratio, seq_score, prm_loss
+
         # ── Move PRM + ref + optimizer back to CPU ──
         self._move_optimizer_states("cpu")
         self._move_to_cpu(self.ref_model)
         self._move_to_cpu(self.prm_model)
 
-        # ── Restore output tensors to GPU ──
-        for k, v in output_cpu.items():
-            if isinstance(v, torch.Tensor):
-                output[k] = v.to(self._gpu_device)
-            else:
-                output[k] = v
-
         mode = "train" if self.model.training else "eval"
-        self._metrics[mode]["prime/prm_loss"].append(prm_loss.item())
+        self._metrics[mode]["prime/prm_loss"].append(prm_loss_val)
 
     def _generate_and_score_completions(self, inputs):
         """
         Override to inject PRIME dense advantage computation.
 
         Flow:
-        1. Call parent to generate, compute outcome rewards, and get tensors
-        2. Compute process rewards via PRM
-        3. Update PRM online
-        4. Replace advantages with PRIME dense advantages
+        1. Call parent to generate completions and compute outcome rewards
+        2. Offload ALL GPU tensors to CPU → free GPU
+        3. Update PRM online (GPU is mostly empty, ~9GB policy+optimizer)
+        4. Compute process rewards with UPDATED PRM (per PRIME paper)
+        5. Restore tensors to GPU, compute dense advantage
         """
+        import gc
+
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         num_generations = self.num_generations if mode == "train" else self.num_generations_eval
@@ -332,54 +328,92 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # ── Step 1: Parent generates completions and computes outcome rewards ──
         output = super()._generate_and_score_completions(inputs)
 
-        prompt_ids = output["prompt_ids"]
-        prompt_mask = output["prompt_mask"]
+        # Extract outcome rewards from parent's advantages:
+        # Parent computes: advantages = rewards - mean_grouped_rewards (then optionally / std)
+        # We need binary correctness labels. Decode completions and check accuracy.
         completion_ids = output["completion_ids"]
-        completion_mask = output["completion_mask"]
-
-        prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)
-        batch_size = self.args.per_device_train_batch_size
-
-        local_B = completion_ids.size(0)
-
-        # Compute outcome rewards directly by decoding completions and
-        # calling accuracy_reward. This is robust in multi-GPU (DDP) because
-        # we use only local data, unlike _logs which contains gathered values.
         completions_text = self.processing_class.batch_decode(
             completion_ids, skip_special_tokens=True
         )
         completions_for_reward = [
             [{"role": "assistant", "content": c}] for c in completions_text
         ]
-        # Each prompt in `inputs` produced num_generations completions
         solutions_repeated = [
             inp["solution"] for inp in inputs
             for _ in range(num_generations)
         ]
-        outcome_rewards = torch.tensor(
+        # outcome_rewards: binary 0/1 per completion (on CPU to avoid GPU pressure)
+        outcome_rewards_cpu = torch.tensor(
             accuracy_reward(completions_for_reward, solutions_repeated),
-            dtype=torch.float32, device=device,
+            dtype=torch.float32,
         )
+        del completions_text, completions_for_reward, solutions_repeated
 
-        # ── Step 2: Compute process rewards ──
+        # Prepare PRM inputs on CPU (needed for both _update_prm and _compute_process_rewards)
+        prompt_completion_ids_cpu = torch.cat(
+            [output["prompt_ids"], output["completion_ids"]], dim=1
+        ).cpu()
+        attention_mask_cpu = torch.cat(
+            [output["prompt_mask"], output["completion_mask"]], dim=1
+        ).cpu()
+        completion_mask_cpu = output["completion_mask"].cpu()
+        logits_to_keep = output["completion_ids"].size(1)
+        batch_size = self.args.per_device_train_batch_size
+
+        # ── Step 2: Offload ALL GPU tensors to CPU before PRM update ──
+        # Move output dict to CPU
+        output_cpu = {}
+        for k, v in output.items():
+            if isinstance(v, torch.Tensor) and v.is_cuda:
+                output_cpu[k] = v.cpu()
+            else:
+                output_cpu[k] = v
+        output.clear()
+
+        # Force free all GPU memory
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        logger.info(f"GPU after offload: {get_gpu_memory_info()}")
+
+        # ── Step 3: Online PRM update (GPU has only ~9GB: policy + optimizer) ──
+        if mode == "train":
+            self._update_prm(
+                prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu,
+                logits_to_keep, outcome_rewards_cpu, batch_size,
+            )
+
+        # ── Step 4: Compute process rewards with UPDATED PRM (per PRIME paper) ──
+        # _compute_process_rewards loads PRM→GPU→forward→CPU, then ref→GPU→forward→CPU
+        # We need tensors on GPU for this (model forward expects GPU tensors)
+        prompt_completion_ids_gpu = prompt_completion_ids_cpu.to(device)
+        attention_mask_gpu = attention_mask_cpu.to(device)
+        completion_mask_gpu = completion_mask_cpu.to(device)
+
         with torch.no_grad():
             process_rewards, _, _ = self._compute_process_rewards(
-                prompt_completion_ids, attention_mask, completion_mask,
+                prompt_completion_ids_gpu, attention_mask_gpu, completion_mask_gpu,
                 logits_to_keep, batch_size,
             )
 
-        # ── Step 3: Online PRM update ──
-        # _update_prm offloads output to CPU, does PRM update on GPU,
-        # then restores output — manages GPU memory automatically
-        if mode == "train":
-            self._update_prm(
-                output, prompt_completion_ids, attention_mask, completion_mask,
-                logits_to_keep, outcome_rewards, batch_size,
-            )
+        # Free the temporary GPU copies (we'll restore from output_cpu)
+        del prompt_completion_ids_gpu, attention_mask_gpu
+        del prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu
 
-        # ── Step 4: Compute PRIME advantage ──
+        # ── Step 5: Restore output dict to GPU ──
+        for k, v in output_cpu.items():
+            if isinstance(v, torch.Tensor):
+                output[k] = v.to(device)
+            else:
+                output[k] = v
+        del output_cpu
+
+        # completion_mask is back on GPU via output
+        completion_mask = output["completion_mask"]
+        outcome_rewards = outcome_rewards_cpu.to(device)
+        del outcome_rewards_cpu
+
+        # ── Step 6: Compute PRIME advantage ──
         # Process returns: Return_process(t) = Σ_{s=t}^T r_φ(y_s)
         process_returns = self._compute_process_returns(process_rewards, completion_mask)
 
