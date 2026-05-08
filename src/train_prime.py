@@ -11,9 +11,7 @@ Reference: Yuan et al., 2025 — arxiv.org/abs/2502.01456
 """
 
 import argparse
-import copy
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -282,55 +280,26 @@ class PrimeGRPOTrainer(GRPOTrainer):
         logits_to_keep = completion_ids.size(1)
         batch_size = self.args.per_device_train_batch_size
 
-        # Extract per-sample outcome rewards from parent's advantages
-        # Parent computed: advantages = rewards - mean_grouped_rewards (possibly /std)
-        # We need raw outcome rewards. Reconstruct from reward funcs.
-        # Actually, we'll recompute from the stored metrics.
-        # Simpler: access rewards_per_func through _calculate_rewards was already called.
-        # The parent stores weighted rewards in self._logs. But we need per-sample.
-        #
-        # Best approach: We have the completion_ids and can call reward funcs again,
-        # but that's wasteful. Instead, let's extract from parent's advantage logic.
-        #
-        # The parent already computed advantages. We need to REPLACE them.
-        # For outcome rewards, we can reconstruct:
-        #   Parent uses: rewards = (rewards_per_func * weights).nansum(dim=1)
-        #   But rewards_per_func was gathered (all processes).
-        #   Our local slice: advantages shape = (local_B,)
-        #
-        # Simplest: re-call reward funcs on our local data.
-        # But actually, the parent already logged rewards. Let's grab from _logs.
-        #
-        # Even simpler: the accuracy_reward values are in _logs["rewards"]["accuracy_reward"]
-        # But those are gathered across all processes.
-        #
-        # Cleanest approach: override at a higher level. But to minimize changes,
-        # let's grab the accuracy reward from the last batch of _logs.
-        # The _logs contain ALL gathered rewards. We need our local slice.
-
-        # We need outcome rewards per sample. Let's extract from the parent's
-        # reward computation. The simplest way: the accuracy_reward gives 0/1,
-        # and that's what we need for both the advantage baseline AND PRM labels.
-        #
-        # Since parent already called _calculate_rewards and stored in _logs,
-        # we can read the last num_local_samples from it.
         local_B = completion_ids.size(0)
 
-        # Get accuracy rewards from logs (they're gathered, so take our process slice)
-        acc_rewards_all = self._logs["rewards"].get("accuracy_reward", None)
-        if acc_rewards_all is not None and len(acc_rewards_all) >= local_B:
-            # Take the last local_B entries (most recently added)
-            process_idx = self.accelerator.process_index
-            total_per_process = local_B
-            # In single-process: just take last local_B
-            outcome_rewards = torch.tensor(
-                list(acc_rewards_all)[-total_per_process:],
-                dtype=torch.float32, device=device,
-            )
-        else:
-            # Fallback: all zeros (shouldn't happen)
-            logger.warning("Could not extract accuracy rewards, using zeros")
-            outcome_rewards = torch.zeros(local_B, device=device)
+        # Compute outcome rewards directly by decoding completions and
+        # calling accuracy_reward. This is robust in multi-GPU (DDP) because
+        # we use only local data, unlike _logs which contains gathered values.
+        completions_text = self.processing_class.batch_decode(
+            completion_ids, skip_special_tokens=True
+        )
+        completions_for_reward = [
+            [{"role": "assistant", "content": c}] for c in completions_text
+        ]
+        # Each prompt in `inputs` produced num_generations completions
+        solutions_repeated = [
+            inp["solution"] for inp in inputs
+            for _ in range(num_generations)
+        ]
+        outcome_rewards = torch.tensor(
+            accuracy_reward(completions_for_reward, solutions_repeated),
+            dtype=torch.float32, device=device,
+        )
 
         # ── Step 2: Compute process rewards ──
         with torch.no_grad():
@@ -465,6 +434,8 @@ def _verify_answer(predicted: str, ground_truth: str) -> bool:
     try:
         from math_verify import parse, verify
         return verify(parse(ground_truth), parse(predicted))
+    except ImportError:
+        pass
     except Exception:
         pass
     def normalize(s):
