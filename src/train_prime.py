@@ -510,11 +510,8 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # outcome_component is (B,), needs to be (B, 1) for broadcasting
         dense_advantages = process_returns_centered + outcome_component.unsqueeze(1)
 
-        # Collapse dense (B, T) advantages to (B,) scalar per sample
-        # Weighted mean over completion tokens — preserves PRIME process reward signal
-        # while being compatible with Liger kernel's scalar advantage requirement
-        seq_advantages = (dense_advantages * completion_mask).sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1)
-        output["advantages"] = seq_advantages
+        # Token-level dense advantages for PRIME policy gradient
+        output["advantages"] = dense_advantages
 
         # ── Logging ──
         self._metrics[mode]["prime/process_reward_mean"].append(
@@ -649,8 +646,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         mask_truncated_completions=grpo_cfg.get("mask_truncated_completions", True),
         generation_batch_size=grpo_cfg.get("generation_batch_size", None),
         num_train_epochs=train_cfg.get("num_train_epochs", 1),
-        per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 1),
-        gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 8),
+        # PRIME requires batch_size=1: no Liger kernel → full 248K logits in memory
+        # batch=1 → 1×T×248K logits ≈ 7.6GB; batch=2 → 15GB+ → OOM on backward
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=64,  # 64×1 = 64 completions = same effective batch
         learning_rate=train_cfg.get("learning_rate", 5e-7),
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
@@ -674,7 +673,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
                 "vllm_group_port": grpo_cfg.get("vllm_group_port", 51216),
             }
         ),
-        use_liger_kernel=True,
+        use_liger_kernel=False,  # PRIME needs (B,T) token-level advantages; Liger expects (B,)
         reward_weights=[1.0, 0.1],
         model_init_kwargs={
             "torch_dtype": "bfloat16",
