@@ -25,10 +25,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.utils import (
     extract_boxed_answer,
     load_config,
+    normalize_latex,
     save_results,
     setup_logging,
     Timer,
     get_gpu_memory_info,
+    verify_answer,
 )
 
 logger = setup_logging("evaluate")
@@ -108,46 +110,8 @@ def load_math_hard() -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────
-# Answer verification
+# Answer verification — uses verify_answer from src.utils
 # ──────────────────────────────────────────────────────────────
-
-def verify_answer(predicted: str | None, ground_truth: str) -> bool:
-    """
-    Verify if predicted answer matches ground truth.
-    
-    Uses math_verify if available, otherwise falls back to string comparison.
-    """
-    if predicted is None:
-        return False
-
-    # Normalize
-    predicted = predicted.strip()
-    ground_truth = ground_truth.strip()
-
-    # Try math_verify first
-    try:
-        from math_verify import parse, verify
-        return verify(parse(ground_truth), parse(predicted))
-    except ImportError:
-        pass
-    except Exception:
-        # math_verify can throw on unparseable expressions
-        pass
-
-    # Fallback: string-based comparison
-    # Remove LaTeX formatting
-    def normalize(s):
-        s = s.replace("\\$", "").replace("$", "")
-        s = s.replace("\\,", "").replace(",", "")
-        s = s.replace(" ", "")
-        s = s.strip()
-        # Try to evaluate as number
-        try:
-            return float(s)
-        except ValueError:
-            return s.lower()
-
-    return normalize(predicted) == normalize(ground_truth)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -348,19 +312,22 @@ def evaluate_model(
             else:
                 # maj@K: majority voting
                 answers = []
+                raw_answers = []  # Keep raw for display
                 for out in output.outputs:
                     generated = out.text
                     predicted = extract_boxed_answer(generated)
                     if predicted is not None:
-                        answers.append(predicted)
+                        answers.append(normalize_latex(predicted))
+                        raw_answers.append(predicted)
                         format_ok += 1
                     total_length += len(generated.split())
 
                 if answers:
-                    # Majority vote
+                    # Majority vote on normalized answers
                     counter = Counter(answers)
                     majority_answer = counter.most_common(1)[0][0]
                     is_correct = verify_answer(majority_answer, ex["answer"])
+
                 else:
                     is_correct = False
 

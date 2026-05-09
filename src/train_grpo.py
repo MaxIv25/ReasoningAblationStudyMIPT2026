@@ -53,7 +53,7 @@ _chunk_o.IS_NVIDIA_HOPPER = False
 from trl import GRPOTrainer, GRPOConfig
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.utils import load_config, setup_logging, get_gpu_memory_info, extract_boxed_answer
+from src.utils import load_config, setup_logging, get_gpu_memory_info, extract_boxed_answer, verify_answer
 
 logger = setup_logging("train_grpo")
 
@@ -80,7 +80,7 @@ def accuracy_reward(completions, solution, log_metric=None, **kwargs):
         content = completion[0]["content"] if isinstance(completion, list) else completion
         predicted = extract_boxed_answer(content)
 
-        if predicted is not None and _verify_answer(predicted, sol):
+        if predicted is not None and verify_answer(predicted, sol):
             rewards.append(1.0)
             num_correct += 1
         else:
@@ -132,31 +132,6 @@ def format_reward(completions, log_metric=None, **kwargs):
     return rewards
 
 
-def _verify_answer(predicted: str, ground_truth: str) -> bool:
-    """Verify answer using math_verify with string fallback."""
-    predicted = predicted.strip()
-    ground_truth = ground_truth.strip()
-
-    # Try math_verify first
-    try:
-        from math_verify import parse, verify
-        return verify(parse(ground_truth), parse(predicted))
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # Fallback: normalized string comparison
-    def normalize(s):
-        s = s.replace("\\$", "").replace("$", "")
-        s = s.replace("\\,", "").replace(",", "")
-        s = s.replace(" ", "").strip()
-        try:
-            return float(s)
-        except ValueError:
-            return s.lower()
-
-    return normalize(predicted) == normalize(ground_truth)
 
 
 # ──────────────────────────────────────────────────────────────

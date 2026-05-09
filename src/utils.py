@@ -98,6 +98,100 @@ def extract_boxed_answer(text: str) -> str | None:
     return None
 
 
+def normalize_latex(s: str) -> str:
+    """
+    Normalize LaTeX string for robust comparison.
+
+    Handles the most common formatting variants that are mathematically
+    equivalent but differ in LaTeX representation:
+      - \\dfrac, \\tfrac → \\frac
+      - \\left( / \\right) → ( / )
+      - \\displaystyle → remove
+      - \\text{...} → contents only (for \\text{Evelyn} vs Evelyn)
+      - Whitespace normalization
+    """
+    # Display-style fraction variants → standard \frac
+    s = s.replace("\\dfrac", "\\frac")
+    s = s.replace("\\tfrac", "\\frac")
+
+    # Remove \displaystyle
+    s = s.replace("\\displaystyle", "")
+
+    # \left( → (  ,  \right) → )  etc.
+    s = re.sub(r"\\left\s*([(\[{|.])", r"\1", s)
+    s = re.sub(r"\\right\s*([)\]}|.])", r"\1", s)
+
+    # \text{...} → contents
+    s = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", s)
+    # \textbf, \textit, \mathrm, \mathbf, etc.
+    s = re.sub(
+        r"\\(?:textbf|textit|mathrm|mathbf|mathit|operatorname)\s*\{([^}]*)\}",
+        r"\1",
+        s,
+    )
+
+    # Strip surrounding $ signs
+    s = s.strip().strip("$").strip()
+
+    # Normalize whitespace: collapse multiple spaces to one
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
+
+
+def verify_answer(predicted: str | None, ground_truth: str) -> bool:
+    """
+    Verify if predicted answer matches ground truth.
+
+    Pipeline:
+      1. Normalize LaTeX (dfrac→frac, strip \\left/\\right, etc.)
+      2. Exact string match after normalization
+      3. Try math_verify on normalized strings
+      4. Try sympy-based symbolic comparison for numeric expressions
+      5. Fall back to normalized string comparison (strip all formatting)
+    """
+    if predicted is None:
+        return False
+
+    predicted = normalize_latex(predicted)
+    ground_truth = normalize_latex(ground_truth)
+
+    # Exact match after normalization (catches most dfrac/frac cases)
+    if predicted == ground_truth:
+        return True
+
+    # Try math_verify
+    try:
+        from math_verify import parse, verify
+        result = verify(parse(ground_truth), parse(predicted))
+        if result:
+            return True
+    except Exception:
+        pass
+
+    # Try sympy for numeric/algebraic expressions
+    try:
+        import sympy
+        gt_expr = sympy.sympify(ground_truth.replace("\\", ""))
+        pred_expr = sympy.sympify(predicted.replace("\\", ""))
+        if sympy.simplify(gt_expr - pred_expr) == 0:
+            return True
+    except Exception:
+        pass
+
+    # Fallback: strip all formatting and compare
+    def _strip_compare(s):
+        s = s.replace("\\$", "").replace("$", "")
+        s = s.replace("\\,", "").replace(",", "")
+        s = s.replace(" ", "").strip()
+        try:
+            return float(s)
+        except ValueError:
+            return s.lower()
+
+    return _strip_compare(predicted) == _strip_compare(ground_truth)
+
+
 def save_results(results: dict, output_path: str):
     """Сохранение результатов в JSON."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
