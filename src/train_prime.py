@@ -657,7 +657,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
             }
         ),
         use_liger_kernel=False,  # PRIME needs (B,T) token-level advantages; Liger expects (B,)
-        reward_weights=[1.0, 0.1],
+        reward_weights=[1.0, 0.5],
         model_init_kwargs={
             "torch_dtype": "bfloat16",
             "attn_implementation": "sdpa",

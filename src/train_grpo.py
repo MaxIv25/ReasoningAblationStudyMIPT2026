@@ -264,8 +264,9 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # Performance
         use_liger_kernel=True,
 
-        # Reward weights: accuracy is primary, format is secondary
-        reward_weights=[1.0, 0.1],
+        # Reward weights: accuracy primary, format secondary but significant
+        # 0.5 (not 0.1) to prevent format compliance collapse during RL
+        reward_weights=[1.0, 0.5],
 
         # Model loading kwargs
         model_init_kwargs={
