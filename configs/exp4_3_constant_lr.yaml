@@ -1,0 +1,12 @@
+# Exp 4.3: Full FT with constant LR (no cosine decay)
+# Warmup for 5% of steps, then constant LR until end.
+# Hypothesis: cosine decay may undertrain in later epochs;
+# constant LR keeps learning rate high throughout.
+method: full_ft
+run_name: "exp4_3_constant_lr"
+
+training:
+  lr_scheduler_type: "constant_with_warmup"
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2
