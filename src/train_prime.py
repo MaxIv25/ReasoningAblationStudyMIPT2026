@@ -644,6 +644,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         save_strategy="steps",
         save_steps=train_cfg.get("save_steps", 100),
         save_total_limit=train_cfg.get("save_total_limit", 3),
+        save_only_model=True,
         logging_steps=train_cfg.get("logging_steps", 10),
         report_to="tensorboard",
         use_vllm=grpo_cfg.get("use_vllm", True),

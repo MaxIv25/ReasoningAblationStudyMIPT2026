@@ -240,10 +240,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         bf16=True,
         gradient_checkpointing=True,
 
-        # Saving
+        # Saving — save_only_model to avoid ~6GB optimizer state per checkpoint
         save_strategy="steps",
         save_steps=train_cfg.get("save_steps", 100),
         save_total_limit=train_cfg.get("save_total_limit", 3),
+        save_only_model=True,
 
         # Logging
         logging_steps=train_cfg.get("logging_steps", 10),
