@@ -8,6 +8,7 @@ model:
 
 grpo:
   loss_type: "grpo"           # Base loss — PRIME changes advantage, not loss
+  scale_rewards: "none"       # No std normalization — RLOO-style (PRIME paper default)
 
 prime:
   enabled: true
