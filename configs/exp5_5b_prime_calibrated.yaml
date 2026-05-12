@@ -1,0 +1,21 @@
+# Exp 5.5b: PRIME on SFT model with CALIBRATED data
+# Purpose: Fix PRIME's 90% prompt filtering by using per-prompt calibrated dataset
+# Key change: data calibrated so per-prompt accuracy is in [0.15, 0.85]
+# This ensures mixed-outcome groups for PRIME's online filter
+run_name: "exp5_5b_prime_calibrated"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "grpo"           # Base loss — PRIME changes advantage, not loss
+  scale_rewards: "none"       # No std normalization — RLOO-style (PRIME paper default)
+
+prime:
+  enabled: true
+  beta: 0.1                   # PRM scale: r(t) = β * log(π_φ/π_ref)
+  prm_lr: 1.0e-6             # PRM learning rate
+  prm_update_epochs: 1       # PRM grad steps per generation batch
+  advantage_baseline: "rloo"  # rloo | group_mean | truncated_mean | dpo_z
+  online_filter: true         # Keep filter — calibrated data makes it work
+  gamma: 1.0                  # Discount for process returns
