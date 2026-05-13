@@ -200,6 +200,31 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(device)
 
+    def _oom_safe_batch(self, initial_bs):
+        """Halve batch size on OOM. Returns a context-manager-like helper."""
+        return initial_bs
+
+    def _get_token_logps_safe(self, model, input_ids, attention_mask,
+                              logits_to_keep, batch_size):
+        """OOM-resilient wrapper: retries with halved batch on CUDA OOM."""
+        import gc
+        bs = batch_size
+        while bs >= 1:
+            try:
+                return self._get_token_logps(
+                    model, input_ids, attention_mask,
+                    logits_to_keep, batch_size=bs,
+                )
+            except torch.cuda.OutOfMemoryError:
+                gc.collect()
+                torch.cuda.empty_cache()
+                new_bs = max(1, bs // 2)
+                logger.warning(f"  [OOM] batch={bs} failed, retrying with batch={new_bs}")
+                bs = new_bs
+                if bs < 1:
+                    raise
+        raise RuntimeError("OOM even at batch=1")
+
     def _compute_process_rewards(self, prompt_completion_ids, attention_mask,
                                   completion_mask, logits_to_keep, batch_size,
                                   cached_ref_logps=None):
@@ -214,10 +239,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
         proc_batch = max(batch_size, self.prm_ref_batch_size)
 
         with torch.no_grad():
-            # PRM forward
+            # PRM forward (OOM-safe)
             self._move_to_gpu(self.prm_model)
             self.prm_model.eval()
-            prm_logps = self._get_token_logps(
+            prm_logps = self._get_token_logps_safe(
                 self.prm_model, prompt_completion_ids, attention_mask,
                 logits_to_keep, batch_size=proc_batch,
             )
@@ -228,7 +253,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 ref_logps = cached_ref_logps
             else:
                 self._move_to_gpu(self.ref_model)
-                ref_logps = self._get_token_logps(
+                ref_logps = self._get_token_logps_safe(
                     self.ref_model, prompt_completion_ids, attention_mask,
                     logits_to_keep, batch_size=proc_batch,
                 )
@@ -306,24 +331,37 @@ class PrimeGRPOTrainer(GRPOTrainer):
         labels = (outcome_rewards > 0.5).float().to(self._gpu_device)
 
         for _ in range(self.prime_prm_update_epochs):
-            # ── Ref forward: all samples, no_grad, micro-batched ──
+            # ── Ref forward: all samples, no_grad, micro-batched (OOM-safe) ──
             self._move_to_gpu(self.ref_model)
-            all_ref_logps = []
             ref_bs = self.prm_ref_batch_size
-            with torch.no_grad():
-                for start in range(0, N, ref_bs):
-                    end = min(start + ref_bs, N)
-                    inp = pci_gpu[start:end]
-                    mask = am_gpu[start:end]
-                    logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
-                    logits = logits[:, :-1, :][:, -logits_to_keep:, :]
-                    logits.div_(self.temperature)
-                    comp_ids = inp[:, -logits_to_keep:]
-                    logps = selective_log_softmax(logits, comp_ids)
-                    all_ref_logps.append(logps)
-                    del logits, logps
-            ref_logps = torch.cat(all_ref_logps, dim=0).detach()
-            del all_ref_logps
+            ref_done = False
+            while not ref_done:
+                try:
+                    all_ref_logps = []
+                    with torch.no_grad():
+                        for start in range(0, N, ref_bs):
+                            end = min(start + ref_bs, N)
+                            inp = pci_gpu[start:end]
+                            mask = am_gpu[start:end]
+                            logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
+                            logits = logits[:, :-1, :][:, -logits_to_keep:, :]
+                            logits.div_(self.temperature)
+                            comp_ids = inp[:, -logits_to_keep:]
+                            logps = selective_log_softmax(logits, comp_ids)
+                            all_ref_logps.append(logps)
+                            del logits, logps
+                    ref_logps = torch.cat(all_ref_logps, dim=0).detach()
+                    del all_ref_logps
+                    ref_done = True
+                except torch.cuda.OutOfMemoryError:
+                    del all_ref_logps
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    new_bs = max(1, ref_bs // 2)
+                    logger.warning(f"  [OOM] ref batch={ref_bs} failed, retrying with batch={new_bs}")
+                    ref_bs = new_bs
+                    if ref_bs < 1:
+                        raise
             self._move_to_cpu(self.ref_model)
             _mem(f"ref done ({N//ref_bs} fwd, batch={ref_bs})")
             t_ref = time.time()
