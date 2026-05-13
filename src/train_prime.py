@@ -386,8 +386,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
             grad_bs = self.prm_grad_batch_size
 
-            # Extension 6.6: Pre-compute log Z(x) per prompt for calibrated PRM loss
-            # Needs all seq_scores → one no_grad pass first
+            # Extension 6.6: Z(x)-calibrated PRM loss
+            # Two-pass approach:
+            #   Pass 1 (no_grad): collect all seq_scores → compute per-prompt log Z(x)
+            #   Pass 2 (with grads): add detached log Z(x) to scores → BCE → backward
+            # Pass 1 is cheap (no grads stored, ~40% faster than backward pass)
             log_zx = None
             if self.zx_calibrated_prm:
                 with torch.no_grad():
@@ -396,25 +399,25 @@ class PrimeGRPOTrainer(GRPOTrainer):
                         end = min(start + grad_bs, N)
                         inp = pci_gpu[start:end]
                         mask = am_gpu[start:end]
-                        logits = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
-                        logits = logits[:, :-1, :][:, -logits_to_keep:, :]
+                        out = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False)
+                        logits = out.logits[:, :-1, :][:, -logits_to_keep:, :]
                         logits.div_(self.temperature)
                         comp_ids = inp[:, -logits_to_keep:]
                         chunk_logps = selective_log_softmax(logits, comp_ids)
                         log_ratio = (chunk_logps - ref_logps[start:end]) * cm_gpu[start:end]
                         all_scores.append(self.prime_beta * log_ratio.sum(dim=1))
-                        del logits, chunk_logps, log_ratio
+                        del out, logits, chunk_logps, log_ratio
                     all_scores = torch.cat(all_scores, dim=0)
-                    # Group by prompt: N = num_prompts * num_generations
+                    # Group by prompt: N = num_prompts × num_generations
                     G = self.num_generations
-                    grouped_scores = all_scores.view(-1, G)
-                    # log Z(x) = logsumexp(scores) - log(G)
-                    log_zx = (torch.logsumexp(grouped_scores, dim=1) -
-                              torch.log(torch.tensor(float(G), device=all_scores.device)))
-                    # Expand back to per-sample
-                    log_zx = log_zx.unsqueeze(1).expand_as(grouped_scores).reshape(-1)
-                    del all_scores, grouped_scores
+                    grouped = all_scores.view(-1, G)
+                    # log Z(x) = logsumexp(scores) - log(K)
+                    log_zx = (torch.logsumexp(grouped, dim=1) -
+                              torch.log(torch.tensor(float(G), device=grouped.device)))
+                    log_zx = log_zx.unsqueeze(1).expand_as(grouped).reshape(-1)
+                    del all_scores, grouped
 
+            # Grad pass (with or without Z(x) correction)
             total_loss = 0.0
             for start in range(0, N, grad_bs):
                 end = min(start + grad_bs, N)
@@ -430,12 +433,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 log_ratio = (prm_logps_chunk - ref_logps[start:end]) * cm_gpu[start:end]
                 seq_scores = self.prime_beta * log_ratio.sum(dim=1)
 
-                # Extension 6.6: Add Z(x) calibration (detached — Z is from no_grad pass)
+                # Extension 6.6: Add Z(x) calibration (detached — no gradient through Z)
                 if log_zx is not None:
                     seq_scores = seq_scores + log_zx[start:end].detach()
 
                 loss_chunk = F.binary_cross_entropy_with_logits(seq_scores, labels[start:end])
-                # Scale by 1/N for mean reduction across all samples
                 (loss_chunk * (end - start) / N).backward()
                 total_loss += loss_chunk.item() * (end - start)
 
