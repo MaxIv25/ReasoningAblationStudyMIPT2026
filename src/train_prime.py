@@ -387,14 +387,17 @@ class PrimeGRPOTrainer(GRPOTrainer):
             grad_bs = self.prm_grad_batch_size
 
             # Extension 6.6: Z(x)-calibrated PRM loss
+            # Theory: L = BCE(β·log(π_φ/π_ref) + β·log Ẑ(x), label)
+            # where log Ẑ(x) = logsumexp(Σ_t log(π_φ/π_ref)) - log K
+            # Note: logsumexp uses RAW log-ratios (without β), then β scales log Z(x)
+            #
             # Two-pass approach:
-            #   Pass 1 (no_grad): collect all seq_scores → compute per-prompt log Z(x)
-            #   Pass 2 (with grads): add detached log Z(x) to scores → BCE → backward
-            # Pass 1 is cheap (no grads stored, ~40% faster than backward pass)
+            #   Pass 1 (no_grad): collect raw log-ratio sums → log Z(x)
+            #   Pass 2 (with grads): seq_scores + β·log_zx → BCE → backward
             log_zx = None
             if self.zx_calibrated_prm:
                 with torch.no_grad():
-                    all_scores = []
+                    all_raw_scores = []
                     for start in range(0, N, grad_bs):
                         end = min(start + grad_bs, N)
                         inp = pci_gpu[start:end]
@@ -405,17 +408,18 @@ class PrimeGRPOTrainer(GRPOTrainer):
                         comp_ids = inp[:, -logits_to_keep:]
                         chunk_logps = selective_log_softmax(logits, comp_ids)
                         log_ratio = (chunk_logps - ref_logps[start:end]) * cm_gpu[start:end]
-                        all_scores.append(self.prime_beta * log_ratio.sum(dim=1))
+                        # Raw score = Σ_t log(π_φ/π_ref) — WITHOUT β
+                        all_raw_scores.append(log_ratio.sum(dim=1))
                         del out, logits, chunk_logps, log_ratio
-                    all_scores = torch.cat(all_scores, dim=0)
-                    # Group by prompt: N = num_prompts × num_generations
+                    all_raw_scores = torch.cat(all_raw_scores, dim=0)
                     G = self.num_generations
-                    grouped = all_scores.view(-1, G)
-                    # log Z(x) = logsumexp(scores) - log(K)
+                    grouped = all_raw_scores.view(-1, G)
+                    # log Z(x) = logsumexp(r/β) - log K = logsumexp(Σ log(π_φ/π_ref)) - log K
                     log_zx = (torch.logsumexp(grouped, dim=1) -
                               torch.log(torch.tensor(float(G), device=grouped.device)))
-                    log_zx = log_zx.unsqueeze(1).expand_as(grouped).reshape(-1)
-                    del all_scores, grouped
+                    # Expand to per-sample, scale by β
+                    log_zx = self.prime_beta * log_zx.unsqueeze(1).expand_as(grouped).reshape(-1)
+                    del all_raw_scores, grouped
 
             # Grad pass (with or without Z(x) correction)
             total_loss = 0.0
