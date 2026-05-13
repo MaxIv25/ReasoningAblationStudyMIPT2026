@@ -279,9 +279,12 @@ class PrimeGRPOTrainer(GRPOTrainer):
         for 16K seq × 248K vocab with gradient checkpointing) = ~5-7GB.
         """
         import gc
+        import time
         from trl.trainer.grpo_trainer import selective_log_softmax
 
         N = prompt_completion_ids.size(0)  # total samples (e.g. 64)
+        _mem = lambda tag: logger.info(f"  [PRM] {tag}: alloc={torch.cuda.memory_allocated(self._gpu_device)/1e9:.1f}GB, "
+                                       f"reserved={torch.cuda.memory_reserved(self._gpu_device)/1e9:.1f}GB")
 
         # ── Step 0: Offload policy model to free GPU ──
         policy_was_training = self.model.training
@@ -293,6 +296,8 @@ class PrimeGRPOTrainer(GRPOTrainer):
                     state[k] = v.cpu()
         gc.collect()
         torch.cuda.empty_cache()
+        _mem("policy offloaded")
+        t_start = time.time()
 
         # Move input tensors to GPU
         pci_gpu = prompt_completion_ids.to(self._gpu_device)
@@ -320,6 +325,9 @@ class PrimeGRPOTrainer(GRPOTrainer):
             ref_logps = torch.cat(all_ref_logps, dim=0).detach()
             del all_ref_logps
             self._move_to_cpu(self.ref_model)
+            _mem(f"ref done ({N//ref_bs} fwd, batch={ref_bs})")
+            t_ref = time.time()
+            logger.info(f"  [PRM] ref forward: {t_ref - t_start:.1f}s")
 
             # ── PRM forward with micro-batched gradient accumulation ──
             self._move_to_gpu(self.prm_model)
@@ -352,6 +360,9 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
+            _mem(f"prm done ({N//grad_bs} fwd, batch={grad_bs})")
+            t_prm = time.time()
+            logger.info(f"  [PRM] prm forward+backward: {t_prm - t_ref:.1f}s")
 
             prm_loss_val = total_loss / N
 
@@ -375,6 +386,8 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["prime/prm_loss"].append(prm_loss_val)
+        _mem("policy restored")
+        logger.info(f"  [PRM] total update: {time.time() - t_start:.1f}s")
         return cached_ref_logps
 
     def _generate_and_score_completions(self, inputs):
@@ -389,13 +402,20 @@ class PrimeGRPOTrainer(GRPOTrainer):
         5. Restore tensors to GPU, compute dense advantage
         """
         import gc
+        import time
 
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         num_generations = self.num_generations if mode == "train" else self.num_generations_eval
+        _mem = lambda tag: logger.info(f"  [{tag}] alloc={torch.cuda.memory_allocated(device)/1e9:.1f}GB, "
+                                       f"reserved={torch.cuda.memory_reserved(device)/1e9:.1f}GB")
 
         # ── Step 1: Parent generates completions and computes outcome rewards ──
+        t0 = time.time()
         output = super()._generate_and_score_completions(inputs)
+        t1 = time.time()
+        _mem("after parent")
+        logger.info(f"  [TIMING] parent generate+score: {t1-t0:.1f}s")
 
         # Extract outcome rewards from parent's advantages:
         # Parent computes: advantages = rewards - mean_grouped_rewards (then optionally / std)
@@ -448,10 +468,13 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # ── Step 3: Online PRM update (GPU has only ~9GB: policy + optimizer) ──
         cached_ref_logps = None
         if mode == "train":
+            t2 = time.time()
             cached_ref_logps = self._update_prm(
                 prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu,
                 logits_to_keep, outcome_rewards_cpu, batch_size,
             )
+            t3 = time.time()
+            logger.info(f"  [TIMING] PRM update: {t3-t2:.1f}s")
 
         # ── Step 4: Compute process rewards with UPDATED PRM (per PRIME paper) ──
         # Reuses cached ref_logps from PRM update (ref model is frozen → same logps)
@@ -463,10 +486,14 @@ class PrimeGRPOTrainer(GRPOTrainer):
         ref_logps_gpu = cached_ref_logps.to(device) if cached_ref_logps is not None else None
 
         with torch.no_grad():
+            t4 = time.time()
             process_rewards, _, _ = self._compute_process_rewards(
                 prompt_completion_ids_gpu, attention_mask_gpu, completion_mask_gpu,
                 logits_to_keep, batch_size, cached_ref_logps=ref_logps_gpu,
             )
+            t5 = time.time()
+            _mem("after process rewards")
+            logger.info(f"  [TIMING] process rewards: {t5-t4:.1f}s (ref={'cached' if ref_logps_gpu is not None else 'computed'})")
         del ref_logps_gpu, cached_ref_logps
 
         # Free the temporary GPU copies (we'll restore from output_cpu)
