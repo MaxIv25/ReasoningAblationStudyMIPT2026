@@ -375,7 +375,17 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # ── Clean up GPU tensors ──
         del pci_gpu, am_gpu, cm_gpu, labels
 
-        # ── Restore policy model to GPU ──
+        # NOTE: policy stays offloaded! Caller must restore it after
+        # process rewards (keeps GPU free for larger batch).
+
+        mode = "train" if self.model.training else "eval"
+        self._metrics[mode]["prime/prm_loss"].append(prm_loss_val)
+        _mem("PRM done (policy still offloaded)")
+        logger.info(f"  [PRM] total update: {time.time() - t_start:.1f}s")
+        return cached_ref_logps, policy_device, policy_was_training
+
+    def _restore_policy(self, policy_device, policy_was_training):
+        """Restore policy model + optimizer to GPU after PRM update + process rewards."""
         self.model.to(policy_device)
         for state in self.optimizer.state.values():
             for k, v in state.items():
@@ -383,12 +393,6 @@ class PrimeGRPOTrainer(GRPOTrainer):
                     state[k] = v.to(policy_device)
         if policy_was_training:
             self.model.train()
-
-        mode = "train" if self.model.training else "eval"
-        self._metrics[mode]["prime/prm_loss"].append(prm_loss_val)
-        _mem("policy restored")
-        logger.info(f"  [PRM] total update: {time.time() - t_start:.1f}s")
-        return cached_ref_logps
 
     def _generate_and_score_completions(self, inputs):
         """
@@ -466,17 +470,20 @@ class PrimeGRPOTrainer(GRPOTrainer):
         logger.info(f"GPU after offload: {get_gpu_memory_info()}")
 
         # ── Step 3: Online PRM update (GPU has only ~9GB: policy + optimizer) ──
+        # After this, policy stays offloaded → GPU mostly free for process rewards
         cached_ref_logps = None
+        policy_device = device
+        policy_was_training = self.model.training
         if mode == "train":
             t2 = time.time()
-            cached_ref_logps = self._update_prm(
+            cached_ref_logps, policy_device, policy_was_training = self._update_prm(
                 prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu,
                 logits_to_keep, outcome_rewards_cpu, batch_size,
             )
             t3 = time.time()
             logger.info(f"  [TIMING] PRM update: {t3-t2:.1f}s")
 
-        # ── Step 4: Compute process rewards with UPDATED PRM (per PRIME paper) ──
+        # ── Step 4: Compute process rewards (policy still offloaded → batch=8 safe) ──
         # Reuses cached ref_logps from PRM update (ref model is frozen → same logps)
         prompt_completion_ids_gpu = prompt_completion_ids_cpu.to(device)
         attention_mask_gpu = attention_mask_cpu.to(device)
@@ -499,6 +506,12 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # Free the temporary GPU copies (we'll restore from output_cpu)
         del prompt_completion_ids_gpu, attention_mask_gpu
         del prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu
+
+        # ── Step 4.5: Restore policy model to GPU (needed for training backward) ──
+        gc.collect()
+        torch.cuda.empty_cache()
+        self._restore_policy(policy_device, policy_was_training)
+        _mem("policy restored")
 
         # ── Step 5: Restore output dict to GPU ──
         for k, v in output_cpu.items():
