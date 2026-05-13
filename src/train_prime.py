@@ -114,6 +114,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
         self.prime_baseline_type = prime_cfg.get("advantage_baseline", "rloo")
         self.prime_online_filter = prime_cfg.get("online_filter", True)
         self.prime_gamma = prime_cfg.get("gamma", 1.0)
+        # PRM update micro-batch sizes (policy is offloaded → GPU mostly free)
+        # ref_batch: no_grad forward, cheap → can be larger
+        # prm_batch: with grads + grad checkpointing → needs more memory
+        self.prm_ref_batch_size = prime_cfg.get("prm_ref_batch_size", 4)
+        self.prm_grad_batch_size = prime_cfg.get("prm_grad_batch_size", 2)
 
         if self.prime_baseline_type not in BASELINE_FUNCS:
             raise ValueError(f"Unknown baseline: {self.prime_baseline_type}. "
@@ -165,6 +170,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         logger.info(f"PRIME config: beta={self.prime_beta}, baseline={self.prime_baseline_type}, "
                     f"prm_lr={self.prime_prm_lr}, online_filter={self.prime_online_filter}")
+        logger.info(f"PRIME PRM batch: ref={self.prm_ref_batch_size}, grad={self.prm_grad_batch_size}")
         logger.info(f"PRIME memory: PRM+ref on CPU (~3.2GB RAM), GPU offload on demand")
 
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
@@ -285,13 +291,15 @@ class PrimeGRPOTrainer(GRPOTrainer):
         labels = (outcome_rewards > 0.5).float().to(self._gpu_device)
 
         for _ in range(self.prime_prm_update_epochs):
-            # ── Ref forward: all samples, no_grad, batch=1 ──
+            # ── Ref forward: all samples, no_grad, micro-batched ──
             self._move_to_gpu(self.ref_model)
             all_ref_logps = []
+            ref_bs = self.prm_ref_batch_size
             with torch.no_grad():
-                for i in range(N):
-                    inp = pci_gpu[i:i+1]
-                    mask = am_gpu[i:i+1]
+                for start in range(0, N, ref_bs):
+                    end = min(start + ref_bs, N)
+                    inp = pci_gpu[start:end]
+                    mask = am_gpu[start:end]
                     logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
                     logits = logits[:, :-1, :][:, -logits_to_keep:, :]
                     logits.div_(self.temperature)
@@ -303,32 +311,34 @@ class PrimeGRPOTrainer(GRPOTrainer):
             del all_ref_logps
             self._move_to_cpu(self.ref_model)
 
-            # ── PRM forward with per-sample gradient accumulation ──
+            # ── PRM forward with micro-batched gradient accumulation ──
             self._move_to_gpu(self.prm_model)
             self.prm_model.train()
             self._move_optimizer_states(self._gpu_device)
             self.prm_optimizer.zero_grad()
 
             total_loss = 0.0
-            for i in range(N):
-                inp = pci_gpu[i:i+1]
-                mask = am_gpu[i:i+1]
+            grad_bs = self.prm_grad_batch_size
+            for start in range(0, N, grad_bs):
+                end = min(start + grad_bs, N)
+                inp = pci_gpu[start:end]
+                mask = am_gpu[start:end]
                 logits = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
                 logits = logits[:, :-1, :][:, -logits_to_keep:, :]
                 logits.div_(self.temperature)
                 comp_ids = inp[:, -logits_to_keep:]
-                prm_logps_i = selective_log_softmax(logits, comp_ids)
+                prm_logps_chunk = selective_log_softmax(logits, comp_ids)
 
-                # Per-sample loss
-                log_ratio_i = (prm_logps_i - ref_logps[i:i+1]) * cm_gpu[i:i+1]
-                seq_score_i = self.prime_beta * log_ratio_i.sum(dim=1)
-                loss_i = F.binary_cross_entropy_with_logits(seq_score_i, labels[i:i+1])
-                # Scale by 1/N for mean reduction across samples
-                (loss_i / N).backward()
-                total_loss += loss_i.item()
+                # Per-chunk loss
+                log_ratio = (prm_logps_chunk - ref_logps[start:end]) * cm_gpu[start:end]
+                seq_scores = self.prime_beta * log_ratio.sum(dim=1)
+                loss_chunk = F.binary_cross_entropy_with_logits(seq_scores, labels[start:end])
+                # Scale by 1/N for mean reduction across all samples
+                (loss_chunk * (end - start) / N).backward()
+                total_loss += loss_chunk.item() * (end - start)
 
                 # Free graph immediately
-                del logits, prm_logps_i, log_ratio_i, seq_score_i, loss_i
+                del logits, prm_logps_chunk, log_ratio, seq_scores, loss_chunk
 
             torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
             self.prm_optimizer.step()
