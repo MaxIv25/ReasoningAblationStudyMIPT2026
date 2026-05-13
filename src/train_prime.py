@@ -115,10 +115,17 @@ class PrimeGRPOTrainer(GRPOTrainer):
         self.prime_online_filter = prime_cfg.get("online_filter", True)
         self.prime_gamma = prime_cfg.get("gamma", 1.0)
         # PRM update micro-batch sizes (policy is offloaded → GPU mostly free)
-        # ref_batch: no_grad forward, cheap → can be larger
-        # prm_batch: with grads + grad checkpointing → needs more memory
         self.prm_ref_batch_size = prime_cfg.get("prm_ref_batch_size", 4)
         self.prm_grad_batch_size = prime_cfg.get("prm_grad_batch_size", 2)
+
+        # Extension 6.5: Curriculum — ramp process weight α from 0→1
+        # 0 = disabled (α=1 always), >0 = linear warmup over N steps
+        self.curriculum_warmup_steps = prime_cfg.get("curriculum_warmup_steps", 0)
+        self._prime_step_counter = 0
+
+        # Extension 6.6: Z(x)-calibrated PRM loss
+        # Adds MC estimate of log Z(x) to PRM score before BCE
+        self.zx_calibrated_prm = prime_cfg.get("zx_calibrated_prm", False)
 
         if self.prime_baseline_type not in BASELINE_FUNCS:
             raise ValueError(f"Unknown baseline: {self.prime_baseline_type}. "
@@ -171,6 +178,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
         logger.info(f"PRIME config: beta={self.prime_beta}, baseline={self.prime_baseline_type}, "
                     f"prm_lr={self.prime_prm_lr}, online_filter={self.prime_online_filter}")
         logger.info(f"PRIME PRM batch: ref={self.prm_ref_batch_size}, grad={self.prm_grad_batch_size}")
+        if self.curriculum_warmup_steps > 0:
+            logger.info(f"PRIME curriculum: α warmup over {self.curriculum_warmup_steps} steps")
+        if self.zx_calibrated_prm:
+            logger.info(f"PRIME Z(x)-calibrated PRM loss enabled")
         logger.info(f"PRIME memory: PRM+ref on CPU (~3.2GB RAM), GPU offload on demand")
 
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
@@ -373,8 +384,38 @@ class PrimeGRPOTrainer(GRPOTrainer):
             self._move_optimizer_states(self._gpu_device)
             self.prm_optimizer.zero_grad()
 
-            total_loss = 0.0
             grad_bs = self.prm_grad_batch_size
+
+            # Extension 6.6: Pre-compute log Z(x) per prompt for calibrated PRM loss
+            # Needs all seq_scores → one no_grad pass first
+            log_zx = None
+            if self.zx_calibrated_prm:
+                with torch.no_grad():
+                    all_scores = []
+                    for start in range(0, N, grad_bs):
+                        end = min(start + grad_bs, N)
+                        inp = pci_gpu[start:end]
+                        mask = am_gpu[start:end]
+                        logits = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
+                        logits = logits[:, :-1, :][:, -logits_to_keep:, :]
+                        logits.div_(self.temperature)
+                        comp_ids = inp[:, -logits_to_keep:]
+                        chunk_logps = selective_log_softmax(logits, comp_ids)
+                        log_ratio = (chunk_logps - ref_logps[start:end]) * cm_gpu[start:end]
+                        all_scores.append(self.prime_beta * log_ratio.sum(dim=1))
+                        del logits, chunk_logps, log_ratio
+                    all_scores = torch.cat(all_scores, dim=0)
+                    # Group by prompt: N = num_prompts * num_generations
+                    G = self.num_generations
+                    grouped_scores = all_scores.view(-1, G)
+                    # log Z(x) = logsumexp(scores) - log(G)
+                    log_zx = (torch.logsumexp(grouped_scores, dim=1) -
+                              torch.log(torch.tensor(float(G), device=all_scores.device)))
+                    # Expand back to per-sample
+                    log_zx = log_zx.unsqueeze(1).expand_as(grouped_scores).reshape(-1)
+                    del all_scores, grouped_scores
+
+            total_loss = 0.0
             for start in range(0, N, grad_bs):
                 end = min(start + grad_bs, N)
                 inp = pci_gpu[start:end]
@@ -388,6 +429,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 # Per-chunk loss
                 log_ratio = (prm_logps_chunk - ref_logps[start:end]) * cm_gpu[start:end]
                 seq_scores = self.prime_beta * log_ratio.sum(dim=1)
+
+                # Extension 6.6: Add Z(x) calibration (detached — Z is from no_grad pass)
+                if log_zx is not None:
+                    seq_scores = seq_scores + log_zx[start:end].detach()
+
                 loss_chunk = F.binary_cross_entropy_with_logits(seq_scores, labels[start:end])
                 # Scale by 1/N for mean reduction across all samples
                 (loss_chunk * (end - start) / N).backward()
@@ -610,9 +656,18 @@ class PrimeGRPOTrainer(GRPOTrainer):
             frac_filtered = skip_mask.float().mean().item()
             self._metrics[mode]["prime/filtered_prompts_frac"].append(frac_filtered)
 
-        # --- Combine: A_t = Return_process(t) + Return_outcome ---
+        # --- Combine: A_t = α · Return_process(t) + Return_outcome ---
+        # Extension 6.5: Curriculum — ramp α from 0→1 over warmup steps
+        if self.curriculum_warmup_steps > 0:
+            alpha = min(1.0, self._prime_step_counter / max(1, self.curriculum_warmup_steps))
+        else:
+            alpha = 1.0
+
         # outcome_component is (B,), needs to be (B, 1) for broadcasting
-        dense_advantages = process_returns_centered + outcome_component.unsqueeze(1)
+        dense_advantages = alpha * process_returns_centered + outcome_component.unsqueeze(1)
+
+        # Increment step counter for curriculum
+        self._prime_step_counter += 1
 
         # Token-level dense advantages for PRIME policy gradient
         output["advantages"] = dense_advantages
@@ -632,6 +687,8 @@ class PrimeGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["prime/advantage_mean"].append(
             dense_advantages[completion_mask.bool()].mean().item()
         )
+        if self.curriculum_warmup_steps > 0:
+            self._metrics[mode]["prime/curriculum_alpha"].append(alpha)
 
         return output
 

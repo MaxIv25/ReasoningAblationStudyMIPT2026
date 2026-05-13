@@ -1,0 +1,26 @@
+# Exp 5.5e: PRIME with Z(x)-calibrated PRM loss (Extension 6.6)
+# Purpose: Add MC partition function estimate to PRM BCE loss
+# Hypothesis: PRM focuses gradient on hard prompts (low Z) → better calibration
+# Note: extra no_grad PRM forward pass per step → ~30s overhead
+run_name: "exp5_5e_prime_zx_calibrated"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "grpo"
+  scale_rewards: "none"
+  vllm_server_port: 8458        # Different port for parallel
+  vllm_group_port: 51222
+
+prime:
+  enabled: true
+  beta: 0.1
+  prm_lr: 1.0e-6
+  prm_update_epochs: 1
+  advantage_baseline: "rloo"
+  online_filter: true
+  gamma: 1.0
+  prm_ref_batch_size: 8
+  prm_grad_batch_size: 2
+  zx_calibrated_prm: true       # Enable Z(x) calibration in PRM loss

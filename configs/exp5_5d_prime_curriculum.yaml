@@ -1,0 +1,25 @@
+# Exp 5.5d: PRIME with Curriculum (Extension 6.5)
+# Purpose: Ramp process reward weight α from 0→1 over 50 steps
+# Hypothesis: Early PRM is noisy → curriculum prevents noise from hurting policy
+run_name: "exp5_5d_prime_curriculum"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "grpo"
+  scale_rewards: "none"
+  vllm_server_port: 8457        # Parallel run port
+  vllm_group_port: 51220
+
+prime:
+  enabled: true
+  beta: 0.1
+  prm_lr: 1.0e-6
+  prm_update_epochs: 1
+  advantage_baseline: "rloo"
+  online_filter: true
+  gamma: 1.0
+  prm_ref_batch_size: 8
+  prm_grad_batch_size: 2
+  curriculum_warmup_steps: 50   # α goes 0→1 linearly over 50 steps (~27% of training)
