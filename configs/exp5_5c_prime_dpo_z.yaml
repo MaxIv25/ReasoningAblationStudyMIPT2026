@@ -1,0 +1,24 @@
+# Exp 5.5c: PRIME with DPO-Z baseline on CALIBRATED data
+# Purpose: Test Z(x)-calibrated partition function baseline vs RLOO
+# Parallel run — uses port 8457 to avoid conflict with RLOO on 8456
+run_name: "exp5_5c_prime_dpo_z"
+
+model:
+  name: "outputs/exp2_1_full_ft"
+
+grpo:
+  loss_type: "grpo"
+  scale_rewards: "none"
+  vllm_server_port: 8457        # Different port for parallel run
+  vllm_group_port: 51220        # Different group port
+
+prime:
+  enabled: true
+  beta: 0.1
+  prm_lr: 1.0e-6
+  prm_update_epochs: 1
+  advantage_baseline: "dpo_z"   # Z(x)-calibrated baseline
+  online_filter: true
+  gamma: 1.0
+  prm_ref_batch_size: 8
+  prm_grad_batch_size: 4
