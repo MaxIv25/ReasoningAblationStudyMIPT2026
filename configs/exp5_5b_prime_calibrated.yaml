@@ -20,4 +20,4 @@ prime:
   online_filter: true         # Keep filter — calibrated data makes it work
   gamma: 1.0                  # Discount for process returns
   prm_ref_batch_size: 8       # Ref no_grad forward: 0.1GB alloc → safe at 8
-  prm_grad_batch_size: 4      # PRM with grads: ~40GB peak, policy offloaded → safe
+  prm_grad_batch_size: 2      # batch=4 OOMs on shared GPU; 2 is safe

@@ -21,4 +21,4 @@ prime:
   online_filter: true
   gamma: 1.0
   prm_ref_batch_size: 8
-  prm_grad_batch_size: 4
+  prm_grad_batch_size: 2
