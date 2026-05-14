@@ -421,13 +421,7 @@ def main():
     prompts = []
     solutions = []
     for item in shard_data:
-        messages = item["prompt"]
-        user_content = messages[0]["content"]
-        prompt = (
-            f"<|im_start|>user\n{user_content}<|im_end|>\n"
-            f"<|im_start|>assistant\n<think>\n"
-        )
-        prompts.append(prompt)
+        prompts.append(item["prompt"])
         solutions.append(item["solution"])
 
     # ── Probe ──
