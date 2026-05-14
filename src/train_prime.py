@@ -762,6 +762,8 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
 
     logger.info(f"PRIME-GRPO | loss_type={loss_type} | model={model_name}")
     logger.info(f"PRIME config: {prime_cfg}")
+    logger.info(f"Sampling: temperature={grpo_cfg.get('temperature', 1.0)}, "
+                f"top_p={grpo_cfg.get('top_p', 1.0)}, top_k={grpo_cfg.get('top_k', 0)}")
     logger.info(f"GPU info: {get_gpu_memory_info()}")
 
     torch.backends.cuda.matmul.allow_tf32 = True
