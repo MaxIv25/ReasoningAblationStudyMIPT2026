@@ -139,9 +139,9 @@ def probe_dataset(
     solutions: list[str],
     num_probes: int = 16,
     max_new_tokens: int = 16384,
-    temperature: float = 0.6,
-    top_p: float = 0.95,
-    top_k: int = 20,
+    temperature: float = 1.0,    # Must match training (RL exploration)
+    top_p: float = 1.0,          # Must match training
+    top_k: int = 0,              # Must match training
     gpu_memory_utilization: float = 0.9,
 ) -> list[float]:
     """
