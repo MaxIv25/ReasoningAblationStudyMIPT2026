@@ -42,10 +42,12 @@ grpo:
   vllm_mode: "server"              # Separate GPU for vLLM — no memory contention
   vllm_server_port: 8456            # Non-default port to avoid conflicts
 
-  # Sampling — MUST match calibration (scripts/calibrate_prime_data.py)
-  temperature: 0.6
-  top_p: 0.95
-  top_k: 20
+  # Sampling for RL generation — HIGH diversity for meaningful advantages
+  # Standard in literature: DeepSeek-R1, GRPO, DAPO, PRIME all use temp=1.0
+  # Eval uses temp=0.6 (see eval: section below)
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 0
 
 training:
   per_device_train_batch_size: 2   # 2 completions per micro-batch (vocab 248K limits this)
