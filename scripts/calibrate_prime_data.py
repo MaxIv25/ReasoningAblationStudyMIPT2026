@@ -57,22 +57,22 @@ logger = setup_logging("calibrate_prime_data")
 # Dataset loading (same logic as prepare_grpo_easy.py)
 # ──────────────────────────────────────────────────────────────
 
-def build_prompt(problem: str) -> list:
-    """Build conversational prompt matching the GRPO format."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                f"{problem}\n\n"
-                "Please reason step by step, and put your final answer "
-                "within \\boxed{}."
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": "<think>\n",
-        },
-    ]
+def build_prompt(problem: str) -> str:
+    """Build pre-formatted prompt string for Qwen3.5 thinking mode.
+    
+    Returns a raw string (not message list) so TRL sends it to vLLM as-is,
+    bypassing apply_chat_template which breaks enable_thinking=True.
+    """
+    content = (
+        f"{problem}\n\n"
+        "Please reason step by step, and put your final answer "
+        "within \\boxed{}."
+    )
+    # Matches tokenizer.apply_chat_template(messages, enable_thinking=True, add_generation_prompt=True)
+    return (
+        f"<|im_start|>user\n{content}<|im_end|>\n"
+        f"<|im_start|>assistant\n<think>\n"
+    )
 
 
 def load_full_pool() -> list[dict]:

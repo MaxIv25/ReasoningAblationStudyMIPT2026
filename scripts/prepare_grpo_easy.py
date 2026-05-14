@@ -42,22 +42,21 @@ def extract_math_answer(solution: str) -> str:
     return extract_boxed_answer(solution)
 
 
-def build_prompt(problem: str) -> list:
-    """Build conversational prompt matching the existing GRPO format."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                f"{problem}\n\n"
-                "Please reason step by step, and put your final answer "
-                "within \\boxed{}."
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": "<think>\n",
-        },
-    ]
+def build_prompt(problem: str) -> str:
+    """Build pre-formatted prompt string for Qwen3.5 thinking mode.
+    
+    Returns a raw string (not message list) so TRL sends it to vLLM as-is,
+    bypassing apply_chat_template which breaks enable_thinking=True.
+    """
+    content = (
+        f"{problem}\n\n"
+        "Please reason step by step, and put your final answer "
+        "within \\boxed{}."
+    )
+    return (
+        f"<|im_start|>user\n{content}<|im_end|>\n"
+        f"<|im_start|>assistant\n<think>\n"
+    )
 
 
 def load_gsm8k(num_samples: int = 250, seed: int = 42) -> list:
