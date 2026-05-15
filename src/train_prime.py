@@ -530,6 +530,18 @@ class PrimeGRPOTrainer(GRPOTrainer):
             accuracy_reward(completions_for_reward, solutions_repeated),
             dtype=torch.float32,
         )
+
+        # DIAGNOSTIC: Check if K completions per prompt are identical
+        if self._prime_step_counter < 3:
+            K = num_generations
+            first_prompt_completions = completions_text[:K]
+            logger.info(f"  [DIAG] Prompt 0, K={K} completions (first 100 chars):")
+            for i, c in enumerate(first_prompt_completions):
+                logger.info(f"    [{i}] reward={outcome_rewards_cpu[i].item():.0f} | {c[:100]}")
+            unique_texts = len(set(first_prompt_completions))
+            unique_answers = len(set(outcome_rewards_cpu[:K].tolist()))
+            logger.info(f"  [DIAG] Unique texts: {unique_texts}/{K}, Unique answers: {unique_answers}")
+
         del completions_text, completions_for_reward, solutions_repeated
 
         # Prepare PRM inputs on CPU (needed for both _update_prm and _compute_process_rewards)
