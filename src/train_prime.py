@@ -144,45 +144,24 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         logger.info(f"Loading PRM from: {prm_model_id} (CPU offload)")
 
-        # Qwen3.5 is a VLM — AutoModelForCausalLM loads Qwen3_5ForCausalLM which
-        # expects text_config.vocab_size, but the VLM config nests it differently.
-        # Fix: load config, extract text_config, use it to load text-only model.
+        # Qwen3.5 is a VLM — AutoModelForCausalLM fails because Qwen3_5Config
+        # stores vocab_size in text_config, not at the top level.
+        # Fix: extract text_config and pass it to from_pretrained, which handles
+        # the key remapping (model.language_model.* → model.*) automatically.
         from transformers import AutoConfig
         _full_config = AutoConfig.from_pretrained(prm_model_id)
         _text_config = _full_config.get_text_config() if hasattr(_full_config, 'get_text_config') else _full_config
-        _text_model_type = getattr(_text_config, 'model_type', None)
+        _is_vlm = getattr(_text_config, 'model_type', None) != _full_config.model_type
 
-        if _text_model_type and _text_model_type != _full_config.model_type:
-            # VLM with nested text config — load text-only model directly
-            from transformers import AutoModelForCausalLM as _AutoCausal
-            logger.info(f"  VLM detected (type={_full_config.model_type}), loading text-only model (type={_text_model_type})")
-            self.prm_model = _AutoCausal.from_config(_text_config).to(torch.bfloat16)
-            # Load weights from the checkpoint, ignoring visual encoder keys
-            import safetensors.torch
-            from pathlib import Path as _Path
-            _ckpt_dir = _Path(prm_model_id)
-            _state = {}
-            for sf in sorted(_ckpt_dir.glob("*.safetensors")):
-                _state.update(safetensors.torch.load_file(str(sf), device="cpu"))
-            # Filter to text model keys only (remove "model.visual.*" and remap "model.text.*" → "model.*")
-            _text_state = {}
-            for k, v in _state.items():
-                if k.startswith("model.visual.") or k.startswith("visual."):
-                    continue
-                _text_state[k] = v
-            missing, unexpected = self.prm_model.load_state_dict(_text_state, strict=False)
-            if missing:
-                logger.warning(f"  PRM missing keys: {len(missing)} (e.g. {missing[:3]})")
-            if unexpected:
-                logger.warning(f"  PRM unexpected keys: {len(unexpected)} (e.g. {unexpected[:3]})")
-            del _state, _text_state
-        else:
-            # Standard text-only model — load normally
-            self.prm_model = AutoModelForCausalLM.from_pretrained(
-                prm_model_id,
-                torch_dtype=torch.bfloat16,
-                attn_implementation="sdpa",
-            )
+        if _is_vlm:
+            logger.info(f"  VLM detected (type={_full_config.model_type}), using text_config (type={_text_config.model_type})")
+
+        self.prm_model = AutoModelForCausalLM.from_pretrained(
+            prm_model_id,
+            config=_text_config if _is_vlm else _full_config,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+        )  # stays on CPU
 
         self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
@@ -191,21 +170,12 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # Stays on CPU (~1.6GB RAM), loaded to GPU on demand
         if self.ref_model is None:
             logger.info("Loading reference model for PRIME (CPU offload)")
-            if _text_model_type and _text_model_type != _full_config.model_type:
-                # Same VLM fix for ref model
-                self.ref_model = _AutoCausal.from_config(_text_config).to(torch.bfloat16)
-                _state2 = {}
-                for sf in sorted(_ckpt_dir.glob("*.safetensors")):
-                    _state2.update(safetensors.torch.load_file(str(sf), device="cpu"))
-                _text_state2 = {k: v for k, v in _state2.items() if not k.startswith("model.visual.") and not k.startswith("visual.")}
-                self.ref_model.load_state_dict(_text_state2, strict=False)
-                del _state2, _text_state2
-            else:
-                self.ref_model = AutoModelForCausalLM.from_pretrained(
-                    prm_model_id,
-                    torch_dtype=torch.bfloat16,
-                    attn_implementation="sdpa",
-                )
+            self.ref_model = AutoModelForCausalLM.from_pretrained(
+                prm_model_id,
+                config=_text_config if _is_vlm else _full_config,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="sdpa",
+            )
             self.ref_model.eval()
             for p in self.ref_model.parameters():
                 p.requires_grad = False
@@ -577,16 +547,23 @@ class PrimeGRPOTrainer(GRPOTrainer):
             dtype=torch.float32,
         )
 
-        # DIAGNOSTIC: Check if K completions per prompt are identical
+        # DIAGNOSTIC: Check outcomes for ALL prompts (not just first)
         if self._prime_step_counter < 3:
             K = num_generations
-            first_prompt_completions = completions_text[:K]
+            n_prompts = len(outcome_rewards_cpu) // K
             logger.info(f"  [DIAG] Prompt 0, K={K} completions (first 100 chars):")
+            first_prompt_completions = completions_text[:K]
             for i, c in enumerate(first_prompt_completions):
                 logger.info(f"    [{i}] reward={outcome_rewards_cpu[i].item():.0f} | {c[:100]}")
             unique_texts = len(set(first_prompt_completions))
-            unique_answers = len(set(outcome_rewards_cpu[:K].tolist()))
-            logger.info(f"  [DIAG] Unique texts: {unique_texts}/{K}, Unique answers: {unique_answers}")
+            logger.info(f"  [DIAG] Unique texts: {unique_texts}/{K}")
+            # Summary for ALL prompts
+            logger.info(f"  [DIAG] All {n_prompts} prompts outcome summary:")
+            for p in range(n_prompts):
+                rewards_p = outcome_rewards_cpu[p*K:(p+1)*K]
+                n_correct = rewards_p.sum().int().item()
+                status = "FILTERED" if (n_correct == 0 or n_correct == K) else "ok"
+                logger.info(f"    Prompt {p}: {n_correct}/{K} correct [{status}]")
 
         del completions_text, completions_for_reward, solutions_repeated
 
