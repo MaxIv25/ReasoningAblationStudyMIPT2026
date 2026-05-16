@@ -41,6 +41,8 @@ grpo:
   use_vllm: true
   vllm_mode: "colocate"             # Same process — weights always synced, no NCCL issues
   vllm_gpu_memory_utilization: 0.3  # 30% GPU for KV cache (~45GB on H200)
+  vllm_importance_sampling_correction: false  # Disable: colocate weights are always synced,
+                                              # logprob diffs are numerical noise, not real shift.
 
   # Sampling for RL generation — HIGH diversity for meaningful advantages
   # Standard in literature: DeepSeek-R1, GRPO, DAPO, PRIME all use temp=1.0
