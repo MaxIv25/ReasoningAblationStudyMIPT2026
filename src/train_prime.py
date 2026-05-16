@@ -830,6 +830,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         report_to="tensorboard",
         use_vllm=grpo_cfg.get("use_vllm", True),
         vllm_mode=grpo_cfg.get("vllm_mode", "colocate"),
+        vllm_enable_sleep_mode=True,  # Release KV cache during training/PRM update
         **(
             {"vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3)}
             if grpo_cfg.get("vllm_mode", "colocate") == "colocate"

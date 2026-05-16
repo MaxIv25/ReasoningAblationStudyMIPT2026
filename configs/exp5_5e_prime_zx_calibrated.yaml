@@ -10,8 +10,6 @@ model:
 grpo:
   loss_type: "grpo"
   scale_rewards: "none"
-  vllm_server_port: 8458        # Different port for parallel
-  vllm_group_port: 51222
 
 prime:
   enabled: true

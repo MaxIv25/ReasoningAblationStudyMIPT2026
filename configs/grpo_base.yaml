@@ -39,8 +39,8 @@ grpo:
 
   # vLLM
   use_vllm: true
-  vllm_mode: "server"              # Separate GPU for vLLM — no memory contention
-  vllm_server_port: 8456            # Non-default port to avoid conflicts
+  vllm_mode: "colocate"             # Same process — weights always synced, no NCCL issues
+  vllm_gpu_memory_utilization: 0.3  # 30% GPU for KV cache (~45GB on H200)
 
   # Sampling for RL generation — HIGH diversity for meaningful advantages
   # Standard in literature: DeepSeek-R1, GRPO, DAPO, PRIME all use temp=1.0
