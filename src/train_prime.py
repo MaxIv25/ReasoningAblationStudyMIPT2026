@@ -537,10 +537,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
         completions_for_reward = [
             [{"role": "assistant", "content": c}] for c in completions_text
         ]
-        solutions_repeated = [
-            inp["solution"] for inp in inputs
-            for _ in range(num_generations)
-        ]
+        # inputs is from RepeatSampler: each prompt repeated num_generations times
+        # e.g. [p0,p0,p0,p0,p0,p0,p0,p0, p1,p1,...] (64 items for 8 prompts × 8 gens)
+        # completions from parent are ordered same way: 8 completions per prompt
+        # So solutions should be 1:1 with completions — no extra repeat needed
+        solutions_repeated = [inp["solution"] for inp in inputs]
         # outcome_rewards: binary 0/1 per completion (on CPU to avoid GPU pressure)
         outcome_rewards_cpu = torch.tensor(
             accuracy_reward(completions_for_reward, solutions_repeated),
