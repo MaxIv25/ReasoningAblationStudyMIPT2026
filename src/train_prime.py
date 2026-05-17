@@ -833,6 +833,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         top_k=grpo_cfg.get("top_k", 0),
         mask_truncated_completions=grpo_cfg.get("mask_truncated_completions", True),
         generation_batch_size=grpo_cfg.get("generation_batch_size", None),
+        num_iterations=train_cfg.get("num_iterations", 1),
         num_train_epochs=train_cfg.get("num_train_epochs", 1),
         # PRIME requires batch_size=1: no Liger kernel → full 248K logits in memory
         # batch=1 → 1×T×248K logits ≈ 7.6GB; batch=2 → 15GB+ → OOM on backward

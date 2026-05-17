@@ -13,7 +13,7 @@ grpo:
 prime:
   enabled: true
   beta: 0.1                   # PRM scale: r(t) = β * log(π_φ/π_ref)
-  prm_lr: 1.0e-6             # PRM learning rate
+  prm_lr: 1.0e-5             # PRM learning rate
   prm_update_epochs: 1       # PRM grad steps per generation batch
   advantage_baseline: "rloo"  # rloo | group_mean | truncated_mean | dpo_z
   online_filter: true         # Skip prompts where all/none correct

@@ -224,6 +224,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         generation_batch_size=grpo_cfg.get("generation_batch_size", None),
 
         # Training
+        num_iterations=train_cfg.get("num_iterations", 1),
         num_train_epochs=train_cfg.get("num_train_epochs", 1),
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 1),
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 8),
