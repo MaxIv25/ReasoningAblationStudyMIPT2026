@@ -56,9 +56,9 @@ training:
   gradient_accumulation_steps: 32  # 32 × 2 = 64 completions = 8 prompts per optimizer step
                                    # Matches generation_batch_size → 1 gen call per optimizer step
                                    # Literature: TinyZero/SimpleRL use 8 prompts per step
-  learning_rate: 5.0e-6            # 0.8B model needs higher LR than 7B (PRIME paper used 1e-6 for 7B)
-                                   # 5e-6 = 5x PRIME paper (scales ~inversely with model size)
-  num_iterations: 2                  # 2 passes over each generation batch (like PPO epochs)
+  learning_rate: 1.5e-6            # 0.8B model needs higher LR than 7B (PRIME paper used 1e-6 for 7B)
+                                   # Reduced from 5e-6 to 1.5e-6 for stability with PRIME
+  num_iterations: 1                  # Reduced to 1 to fit training into <20 hours
                                      # Doubles gradient updates without extra generation cost
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.05

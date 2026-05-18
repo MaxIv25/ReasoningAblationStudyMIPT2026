@@ -13,9 +13,9 @@ grpo:
 
 prime:
   enabled: true
-  beta: 0.1                   # PRM scale: r(t) = β * log(π_φ/π_ref)
-  prm_lr: 1.0e-5             # PRM learning rate
-  prm_update_epochs: 1       # PRM grad steps per generation batch
+  beta: 0.05                  # PRM scale: r(t) = β * log(π_φ/π_ref)
+  prm_lr: 1.0e-6             # PRM learning rate (reduced for stability)
+  prm_update_epochs: 2       # PRM grad steps per generation batch (increased for faster convergence)
   advantage_baseline: "rloo"  # rloo | group_mean | truncated_mean | dpo_z
   online_filter: true         # Keep filter — calibrated data makes it work
   gamma: 1.0                  # Discount for process returns

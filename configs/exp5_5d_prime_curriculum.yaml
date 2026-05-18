@@ -12,9 +12,9 @@ grpo:
 
 prime:
   enabled: true
-  beta: 0.1
-  prm_lr: 1.0e-5
-  prm_update_epochs: 1
+  beta: 0.05
+  prm_lr: 1.0e-6
+  prm_update_epochs: 2
   advantage_baseline: "rloo"
   online_filter: true
   gamma: 1.0
