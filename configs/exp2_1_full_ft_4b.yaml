@@ -1,0 +1,13 @@
+# Exp 2.1-4B: Full Fine-Tuning of Qwen3.5-4B-Base
+method: full_ft
+run_name: "exp2_1_full_ft_4b"
+
+model:
+  name: "Qwen/Qwen3.5-4B-Base"
+
+training:
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  full_ft:
+    learning_rate: 1.0e-5
+    num_train_epochs: 2
