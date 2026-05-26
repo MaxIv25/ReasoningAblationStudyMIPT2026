@@ -254,7 +254,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # vLLM — mode from config (server or colocate)
         use_vllm=grpo_cfg.get("use_vllm", True),
         vllm_mode=grpo_cfg.get("vllm_mode", "colocate"),
-        vllm_enable_sleep_mode=True,  # Release KV cache during training backward
+        vllm_enable_sleep_mode=grpo_cfg.get("vllm_enable_sleep_mode", True),
         vllm_importance_sampling_correction=grpo_cfg.get("vllm_importance_sampling_correction", False),
         **(
             {"vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3)}

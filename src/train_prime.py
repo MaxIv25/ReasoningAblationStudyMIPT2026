@@ -118,6 +118,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
         self.prm_ref_batch_size = prime_cfg.get("prm_ref_batch_size", 4)
         self.prm_grad_batch_size = prime_cfg.get("prm_grad_batch_size", 2)
 
+        # Hybrid Offloading Configs
+        self.cpu_offload_policy = prime_cfg.get("cpu_offload_policy", prime_cfg.get("cpu_offload", True))
+        self.cpu_offload_aux = prime_cfg.get("cpu_offload_aux", True)
+
         # Extension 6.5: Curriculum — ramp process weight α from 0→1
         # 0 = disabled (α=1 always), >0 = linear warmup over N steps
         self.curriculum_warmup_steps = prime_cfg.get("curriculum_warmup_steps", 0)
@@ -134,15 +138,12 @@ class PrimeGRPOTrainer(GRPOTrainer):
         self._gpu_device = self.accelerator.device
 
         # Load PRM — separate copy of SFT model, trainable
-        # Stays on CPU (~1.6GB RAM for 0.8B), loaded to GPU on demand
         model_id = kwargs.get("model", None)
         if isinstance(model_id, str):
             prm_model_id = model_id
         else:
             from trl.trainer.utils import get_config_model_id
             prm_model_id = get_config_model_id(self.model.config)
-
-        logger.info(f"Loading PRM from: {prm_model_id} (CPU offload)")
 
         # Qwen3.5 is a VLM — AutoModelForCausalLM fails because Qwen3_5Config
         # stores vocab_size in text_config, not at the top level.
@@ -156,32 +157,33 @@ class PrimeGRPOTrainer(GRPOTrainer):
         if _is_vlm:
             logger.info(f"  VLM detected (type={_full_config.model_type}), using text_config (type={_text_config.model_type})")
 
+        prm_device = "cpu" if self.cpu_offload_aux else self._gpu_device
+        logger.info(f"Loading PRM from: {prm_model_id} (device={prm_device})")
         self.prm_model = AutoModelForCausalLM.from_pretrained(
             prm_model_id,
             config=_text_config if _is_vlm else _full_config,
             torch_dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        )  # stays on CPU
+        ).to(prm_device)
 
         self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
 
         # Ensure reference model exists (even with beta=0)
-        # Stays on CPU (~1.6GB RAM), loaded to GPU on demand
         if self.ref_model is None:
-            logger.info("Loading reference model for PRIME (CPU offload)")
+            logger.info(f"Loading reference model for PRIME (device={prm_device})")
             self.ref_model = AutoModelForCausalLM.from_pretrained(
                 prm_model_id,
                 config=_text_config if _is_vlm else _full_config,
                 torch_dtype=torch.bfloat16,
                 attn_implementation="sdpa",
-            )
+            ).to(prm_device)
             self.ref_model.eval()
             for p in self.ref_model.parameters():
                 p.requires_grad = False
         else:
-            # Parent loaded ref to GPU — move to CPU for offload
-            self.ref_model.to("cpu")
+            # Move reference model to correct device
+            self.ref_model.to(prm_device)
 
         # PRM optimizer (AdamW, per original PRIME/veRL)
         # States are lazily initialized on first step; managed via _move helpers
@@ -198,7 +200,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
             logger.info(f"PRIME curriculum: α warmup over {self.curriculum_warmup_steps} steps")
         if self.zx_calibrated_prm:
             logger.info(f"PRIME Z(x)-calibrated PRM loss enabled")
-        logger.info(f"PRIME memory: PRM+ref on CPU (~3.2GB RAM), GPU offload on demand")
+        logger.info(f"PRIME memory: Policy offload={self.cpu_offload_policy}, Aux offload={self.cpu_offload_aux}")
 
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
         """Get per-token log-probs from a model (no grad)."""
@@ -267,24 +269,28 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         with torch.no_grad():
             # PRM forward (OOM-safe)
-            self._move_to_gpu(self.prm_model)
+            if self.cpu_offload_aux:
+                self._move_to_gpu(self.prm_model)
             self.prm_model.eval()
             prm_logps = self._get_token_logps_safe(
                 self.prm_model, prompt_completion_ids, attention_mask,
                 logits_to_keep, batch_size=proc_batch,
             )
-            self._move_to_cpu(self.prm_model)
+            if self.cpu_offload_aux:
+                self._move_to_cpu(self.prm_model)
 
             # Ref forward (skip if cached)
             if cached_ref_logps is not None:
                 ref_logps = cached_ref_logps
             else:
-                self._move_to_gpu(self.ref_model)
+                if self.cpu_offload_aux:
+                    self._move_to_gpu(self.ref_model)
                 ref_logps = self._get_token_logps_safe(
                     self.ref_model, prompt_completion_ids, attention_mask,
                     logits_to_keep, batch_size=proc_batch,
                 )
-                self._move_to_cpu(self.ref_model)
+                if self.cpu_offload_aux:
+                    self._move_to_cpu(self.ref_model)
 
         # Token-level process rewards
         process_rewards = self.prime_beta * (prm_logps - ref_logps)
@@ -341,14 +347,15 @@ class PrimeGRPOTrainer(GRPOTrainer):
         # ── Step 0: Offload policy model to free GPU ──
         policy_was_training = self.model.training
         policy_device = next(self.model.parameters()).device
-        self.model.to("cpu")
-        for state in self.optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor) and v.is_cuda:
-                    state[k] = v.cpu()
-        gc.collect()
-        torch.cuda.empty_cache()
-        _mem("policy offloaded")
+        if self.cpu_offload_policy:
+            self.model.to("cpu")
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor) and v.is_cuda:
+                        state[k] = v.cpu()
+            gc.collect()
+            torch.cuda.empty_cache()
+            _mem("policy offloaded")
         t_start = time.time()
 
         # Move input tensors to GPU
@@ -359,7 +366,8 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         for _ in range(self.prime_prm_update_epochs):
             # ── Ref forward: all samples, no_grad, micro-batched (OOM-safe) ──
-            self._move_to_gpu(self.ref_model)
+            if self.cpu_offload_aux:
+                self._move_to_gpu(self.ref_model)
             ref_bs = self.prm_ref_batch_size
             ref_done = False
             while not ref_done:
@@ -389,15 +397,19 @@ class PrimeGRPOTrainer(GRPOTrainer):
                     ref_bs = new_bs
                     if ref_bs < 1:
                         raise
-            self._move_to_cpu(self.ref_model)
+            if self.cpu_offload_aux:
+                self._move_to_cpu(self.ref_model)
             _mem(f"ref done ({N//ref_bs} fwd, batch={ref_bs})")
             t_ref = time.time()
             logger.info(f"  [PRM] ref forward: {t_ref - t_start:.1f}s")
 
             # ── PRM forward with micro-batched gradient accumulation ──
-            self._move_to_gpu(self.prm_model)
+            if self.cpu_offload_aux:
+                self._move_to_gpu(self.prm_model)
+                self._move_optimizer_states(self._gpu_device)
+            else:
+                self._move_optimizer_states(self._gpu_device)
             self.prm_model.train()
-            self._move_optimizer_states(self._gpu_device)
             self.prm_optimizer.zero_grad()
 
             grad_bs = self.prm_grad_batch_size
@@ -475,8 +487,9 @@ class PrimeGRPOTrainer(GRPOTrainer):
             # Clean up — keep ref_logps for reuse in _compute_process_rewards
             cached_ref_logps = ref_logps.cpu()  # save to CPU before cleanup
             del ref_logps
-            self._move_optimizer_states("cpu")
-            self._move_to_cpu(self.prm_model)
+            if self.cpu_offload_aux:
+                self._move_optimizer_states("cpu")
+                self._move_to_cpu(self.prm_model)
 
         # ── Clean up GPU tensors ──
         del pci_gpu, am_gpu, cm_gpu, labels
@@ -519,6 +532,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
         num_generations = self.num_generations if mode == "train" else self.num_generations_eval
         _mem = lambda tag: logger.info(f"  [{tag}] alloc={torch.cuda.memory_allocated(device)/1e9:.1f}GB, "
                                        f"reserved={torch.cuda.memory_reserved(device)/1e9:.1f}GB")
+
+        # Force manual synchronization to the colocated vLLM engine before generation starts:
+        if hasattr(self, "vllm_generation") and self.vllm_generation is not None:
+            logger.info("Manually triggering weight synchronization to vLLM engine...")
+            self.vllm_generation.sync_weights()
 
         # ── Step 1: Parent generates completions and computes outcome rewards ──
         t0 = time.time()
@@ -589,9 +607,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 output_cpu[k] = v
         output.clear()
 
-        # Force free all GPU memory
-        gc.collect()
-        torch.cuda.empty_cache()
+        # Force free all GPU memory only if offloading policy
+        if self.cpu_offload_policy:
+            gc.collect()
+            torch.cuda.empty_cache()
 
         logger.info(f"GPU after offload: {get_gpu_memory_info()}")
 
@@ -634,10 +653,11 @@ class PrimeGRPOTrainer(GRPOTrainer):
         del prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu
 
         # ── Step 4.5: Restore policy model to GPU (needed for training backward) ──
-        gc.collect()
-        torch.cuda.empty_cache()
-        self._restore_policy(policy_device, policy_was_training)
-        _mem("policy restored")
+        if self.cpu_offload_policy:
+            gc.collect()
+            torch.cuda.empty_cache()
+            self._restore_policy(policy_device, policy_was_training)
+            _mem("policy restored")
 
         # ── Step 5: Restore output dict to GPU ──
         for k, v in output_cpu.items():
@@ -855,7 +875,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         report_to="tensorboard",
         use_vllm=grpo_cfg.get("use_vllm", True),
         vllm_mode=grpo_cfg.get("vllm_mode", "colocate"),
-        vllm_enable_sleep_mode=True,  # Release KV cache during training/PRM update
+        vllm_enable_sleep_mode=grpo_cfg.get("vllm_enable_sleep_mode", True),
         vllm_importance_sampling_correction=grpo_cfg.get("vllm_importance_sampling_correction", False),
         **(
             {"vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3)}
