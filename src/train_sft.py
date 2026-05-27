@@ -262,7 +262,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         # save_only_model=False: save optimizer + scheduler states for proper resume.
         # 0.8B model: checkpoint ~5GB (model 1.6GB + optimizer 3.2GB), save_total_limit=2 → ~10GB max.
         # Performance
-        optim="adamw_torch_fused",
+        optim=train_cfg.get("optim", "adamw_torch_fused"),
         # NOTE: torch_compile removed — compilation takes 20+ min with DDP+grad_checkpointing+16K
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
