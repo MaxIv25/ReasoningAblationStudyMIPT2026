@@ -1,0 +1,10 @@
+# Exp 5.2-4B: Vanilla GRPO starting from SFT-trained Qwen3.5-4B-Base checkpoint
+run_name: "exp5_2_grpo_sft_4b"
+
+model:
+  name: "outputs/exp2_1_full_ft_4b"
+
+grpo:
+  loss_type: "grpo"
+  max_completion_length: 16384
+  vllm_enable_sleep_mode: false  # Disable sleep mode to preserve synchronized weights in colocated mode
