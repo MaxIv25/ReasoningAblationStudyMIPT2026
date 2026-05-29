@@ -19,8 +19,8 @@ prime:
   advantage_baseline: "rloo"
   online_filter: true
   gamma: 1.0
-  prm_ref_batch_size: 4
-  prm_grad_batch_size: 1        # Reduce from 2 to 1 for safer activation memory at 16K-20K seq len
+  prm_ref_batch_size: 8        # Increased from 4 to 8 to double speed of frozen reference forward pass
+  prm_grad_batch_size: 2        # Increased from 1 to 2 to double speed of PRM gradient forward/backward pass
   cpu_offload_policy: false     # Policy model permanently on GPU to save massive PCIe latency
   cpu_offload_aux: true         # Reference and PRM models dynamically offloaded to CPU to save VRAM
 

@@ -364,45 +364,47 @@ class PrimeGRPOTrainer(GRPOTrainer):
         cm_gpu = completion_mask.to(self._gpu_device)
         labels = (outcome_rewards > 0.5).float().to(self._gpu_device)
 
-        for _ in range(self.prime_prm_update_epochs):
-            # ── Ref forward: all samples, no_grad, micro-batched (OOM-safe) ──
-            if self.cpu_offload_aux:
-                self._move_to_gpu(self.ref_model)
-            ref_bs = self.prm_ref_batch_size
-            ref_done = False
-            while not ref_done:
-                try:
-                    all_ref_logps = []
-                    with torch.no_grad():
-                        for start in range(0, N, ref_bs):
-                            end = min(start + ref_bs, N)
-                            inp = pci_gpu[start:end]
-                            mask = am_gpu[start:end]
-                            logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
-                            logits = logits[:, :-1, :][:, -logits_to_keep:, :]
-                            logits.div_(self.temperature)
-                            comp_ids = inp[:, -logits_to_keep:]
-                            logps = selective_log_softmax(logits, comp_ids)
-                            all_ref_logps.append(logps)
-                            del logits, logps
-                    ref_logps = torch.cat(all_ref_logps, dim=0).detach()
-                    del all_ref_logps
-                    ref_done = True
-                except torch.cuda.OutOfMemoryError:
-                    del all_ref_logps
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    new_bs = max(1, ref_bs // 2)
-                    logger.warning(f"  [OOM] ref batch={ref_bs} failed, retrying with batch={new_bs}")
-                    ref_bs = new_bs
-                    if ref_bs < 1:
-                        raise
-            if self.cpu_offload_aux:
-                self._move_to_cpu(self.ref_model)
-            _mem(f"ref done ({N//ref_bs} fwd, batch={ref_bs})")
-            t_ref = time.time()
-            logger.info(f"  [PRM] ref forward: {t_ref - t_start:.1f}s")
+        # ── Ref forward: all samples, no_grad, micro-batched (OOM-safe) ──
+        # Calculate ONCE before the epochs loop since the reference model is frozen and doesn't change
+        if self.cpu_offload_aux:
+            self._move_to_gpu(self.ref_model)
+        ref_bs = self.prm_ref_batch_size
+        ref_done = False
+        while not ref_done:
+            try:
+                all_ref_logps = []
+                with torch.no_grad():
+                    for start in range(0, N, ref_bs):
+                        end = min(start + ref_bs, N)
+                        inp = pci_gpu[start:end]
+                        mask = am_gpu[start:end]
+                        logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
+                        logits = logits[:, :-1, :][:, -logits_to_keep:, :]
+                        logits.div_(self.temperature)
+                        comp_ids = inp[:, -logits_to_keep:]
+                        logps = selective_log_softmax(logits, comp_ids)
+                        all_ref_logps.append(logps)
+                        del logits, logps
+                ref_logps = torch.cat(all_ref_logps, dim=0).detach()
+                del all_ref_logps
+                ref_done = True
+            except torch.cuda.OutOfMemoryError:
+                del all_ref_logps
+                gc.collect()
+                torch.cuda.empty_cache()
+                new_bs = max(1, ref_bs // 2)
+                logger.warning(f"  [OOM] ref batch={ref_bs} failed, retrying with batch={new_bs}")
+                ref_bs = new_bs
+                if ref_bs < 1:
+                    raise
+        if self.cpu_offload_aux:
+            self._move_to_cpu(self.ref_model)
+        _mem(f"ref done ({N//ref_bs} fwd, batch={ref_bs})")
+        t_ref = time.time()
+        logger.info(f"  [PRM] ref forward: {t_ref - t_start:.1f}s")
 
+        for epoch in range(self.prime_prm_update_epochs):
+            t_epoch_start = time.time()
             # ── PRM forward with micro-batched gradient accumulation ──
             if self.cpu_offload_aux:
                 self._move_to_gpu(self.prm_model)
@@ -480,16 +482,17 @@ class PrimeGRPOTrainer(GRPOTrainer):
             self.prm_optimizer.step()
             _mem(f"prm done ({N//grad_bs} fwd, batch={grad_bs})")
             t_prm = time.time()
-            logger.info(f"  [PRM] prm forward+backward: {t_prm - t_ref:.1f}s")
+            logger.info(f"  [PRM] prm forward+backward: {t_prm - t_epoch_start:.1f}s")
 
             prm_loss_val = total_loss / N
 
-            # Clean up — keep ref_logps for reuse in _compute_process_rewards
-            cached_ref_logps = ref_logps.cpu()  # save to CPU before cleanup
-            del ref_logps
             if self.cpu_offload_aux:
                 self._move_optimizer_states("cpu")
                 self._move_to_cpu(self.prm_model)
+
+        # Clean up — keep ref_logps for reuse in _compute_process_rewards
+        cached_ref_logps = ref_logps.cpu()  # save to CPU before cleanup
+        del ref_logps
 
         # ── Clean up GPU tensors ──
         del pci_gpu, am_gpu, cm_gpu, labels
