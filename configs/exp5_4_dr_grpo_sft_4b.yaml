@@ -1,0 +1,19 @@
+# Exp 5.4-4B: Dr. GRPO on 4B SFT model
+# Purpose: Compare Dr. GRPO's bias-free normalization on 4B model class.
+# Optimized for 80GB/140GB GPUs (uses ~55GB VRAM)
+run_name: "exp5_4_dr_grpo_sft_4b"
+
+model:
+  name: "outputs/exp2_1_full_ft_4b"
+
+grpo:
+  loss_type: "dr_grpo"
+  scale_rewards: "none"   # Dr. GRPO: remove difficulty bias from std scaling
+  max_completion_length: 16384
+  vllm_gpu_memory_utilization: 0.20  # Safe for any 80GB GPU
+  vllm_enable_sleep_mode: false  # Prevent weight desync in colocated mode
+
+training:
+  optim: paged_adamw_8bit       # 8-bit optimizer to save VRAM
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 32  # Fast and stable step
