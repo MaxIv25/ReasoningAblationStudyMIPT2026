@@ -9,7 +9,7 @@ grpo:
   max_completion_length: 16384  # 16K context
   vllm_enable_sleep_mode: false  # Prevent losing synchronized weights in colocated mode
   vllm_importance_sampling_correction: false
-  vllm_gpu_memory_utilization: 0.15  # Reduce from 0.30 to 0.15 to free 21GB of VRAM for PyTorch!
+  vllm_gpu_memory_utilization: 0.25  # Increased from 0.15 to 0.25 to provide enough space for vLLM KV-Cache blocks
 
 prime:
   enabled: true
