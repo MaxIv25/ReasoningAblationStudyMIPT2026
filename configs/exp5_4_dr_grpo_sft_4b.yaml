@@ -10,10 +10,10 @@ grpo:
   loss_type: "dr_grpo"
   scale_rewards: "none"   # Dr. GRPO: remove difficulty bias from std scaling
   max_completion_length: 16384
-  vllm_gpu_memory_utilization: 0.20  # Safe for any 80GB GPU
+  vllm_gpu_memory_utilization: 0.25  # Space for vLLM KV-Cache blocks (matches PRIME)
   vllm_enable_sleep_mode: false  # Prevent weight desync in colocated mode
 
 training:
   optim: paged_adamw_8bit       # 8-bit optimizer to save VRAM
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 32  # Fast and stable step
+  gradient_accumulation_steps: 8  # 8 steps (187 total steps per epoch)

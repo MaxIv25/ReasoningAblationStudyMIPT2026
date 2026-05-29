@@ -27,4 +27,4 @@ prime:
 training:
   optim: paged_adamw_8bit       # Use 8-bit paged AdamW for Policy model to save 25.8GB of VRAM!
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 32
+  gradient_accumulation_steps: 8
