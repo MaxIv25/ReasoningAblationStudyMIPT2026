@@ -1,5 +1,5 @@
 # Exp 5.2-4B: Vanilla GRPO starting from SFT-trained Qwen3.5-4B-Base checkpoint
-# Optimized for 80GB/140GB GPUs (uses ~55GB VRAM)
+# Configured identically to PRIME 4B config for parallel ablation
 run_name: "exp5_2_grpo_sft_4b"
 
 model:
@@ -8,10 +8,10 @@ model:
 grpo:
   loss_type: "grpo"
   max_completion_length: 16384
-  vllm_gpu_memory_utilization: 0.20  # Safe for any 80GB GPU
+  vllm_gpu_memory_utilization: 0.25  # Space for vLLM KV-Cache blocks (matches PRIME)
   vllm_enable_sleep_mode: false  # Disable sleep mode to preserve synchronized weights in colocated mode
 
 training:
   optim: paged_adamw_8bit       # 8-bit optimizer to save VRAM
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 32  # Fast and stable step
+  gradient_accumulation_steps: 64  # Matches PRIME's hardcoded accumulation (187 steps total)
