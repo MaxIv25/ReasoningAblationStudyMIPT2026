@@ -356,6 +356,10 @@ class PrimeGRPOTrainer(GRPOTrainer):
             gc.collect()
             torch.cuda.empty_cache()
             _mem("policy offloaded")
+        else:
+            gc.collect()
+            torch.cuda.empty_cache()
+            _mem("cache cleared (policy kept on GPU)")
         t_start = time.time()
 
         # Move input tensors to GPU
@@ -496,6 +500,8 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         # ── Clean up GPU tensors ──
         del pci_gpu, am_gpu, cm_gpu, labels
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # NOTE: policy stays offloaded! Caller must restore it after
         # process rewards (keeps GPU free for larger batch).
