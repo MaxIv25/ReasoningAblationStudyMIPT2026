@@ -889,7 +889,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         vllm_enable_sleep_mode=grpo_cfg.get("vllm_enable_sleep_mode", True),
         vllm_importance_sampling_correction=grpo_cfg.get("vllm_importance_sampling_correction", False),
         **(
-            {"vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3)}
+            {
+                "vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3),
+                "vllm_max_model_len": grpo_cfg.get("max_model_len", 16384),
+            }
             if grpo_cfg.get("vllm_mode", "colocate") == "colocate"
             else {
                 "vllm_server_port": grpo_cfg.get("vllm_server_port", 8000),
