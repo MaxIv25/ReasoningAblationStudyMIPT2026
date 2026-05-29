@@ -873,6 +873,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         save_only_model=True,
         logging_steps=train_cfg.get("logging_steps", 10),
         report_to="tensorboard",
+        optim=train_cfg.get("optim", "adamw_torch"),
         use_vllm=grpo_cfg.get("use_vllm", True),
         vllm_mode=grpo_cfg.get("vllm_mode", "colocate"),
         vllm_enable_sleep_mode=grpo_cfg.get("vllm_enable_sleep_mode", True),
