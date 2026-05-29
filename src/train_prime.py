@@ -891,7 +891,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         **(
             {
                 "vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3),
-                "vllm_max_model_len": grpo_cfg.get("max_model_len", 16384),
+                "vllm_max_model_length": grpo_cfg.get("max_model_len", 16384),
             }
             if grpo_cfg.get("vllm_mode", "colocate") == "colocate"
             else {
