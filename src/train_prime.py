@@ -868,7 +868,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         # PRIME requires batch_size=1: no Liger kernel → full 248K logits in memory
         # batch=1 → 1×T×248K logits ≈ 7.6GB; batch=2 → 15GB+ → OOM on backward
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=64,  # 64×1 = 64 completions = same effective batch
+        gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 64),
         learning_rate=train_cfg.get("learning_rate", 5e-7),
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
