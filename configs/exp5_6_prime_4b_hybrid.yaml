@@ -3,7 +3,7 @@
 run_name: "exp5_6_prime_4b_hybrid"
 
 model:
-  name: "Qwen/Qwen3.5-4B-Base"
+  name: "outputs/exp2_1_full_ft_4b"
 
 grpo:
   max_completion_length: 16384  # 16K context

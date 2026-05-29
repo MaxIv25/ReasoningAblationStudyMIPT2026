@@ -493,6 +493,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
             if self.cpu_offload_aux:
                 self._move_optimizer_states("cpu")
                 self._move_to_cpu(self.prm_model)
+                self._move_to_cpu(self.ref_model)
 
         # Clean up — keep ref_logps for reuse in _compute_process_rewards
         cached_ref_logps = ref_logps.cpu()  # save to CPU before cleanup
