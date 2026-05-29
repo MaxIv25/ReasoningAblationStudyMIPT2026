@@ -246,6 +246,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         save_steps=train_cfg.get("save_steps", 100),
         save_total_limit=train_cfg.get("save_total_limit", 3),
         save_only_model=True,
+        optim=train_cfg.get("optim", "adamw_torch"),
 
         # Logging
         logging_steps=train_cfg.get("logging_steps", 10),
