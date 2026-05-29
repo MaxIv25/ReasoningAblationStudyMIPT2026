@@ -1,5 +1,4 @@
 # Exp 5.6: PRIME with Hybrid Offloading and weight sync for 4B model (Qwen/Qwen3.5-4B-Base)
-# Purpose: Ablate larger 4B model class performance with hybrid memory offloading on H200 GPU.
 run_name: "exp5_6_prime_4b_hybrid"
 
 model:
@@ -27,4 +26,7 @@ prime:
 training:
   optim: paged_adamw_8bit       # Use 8-bit paged AdamW for Policy model to save 25.8GB of VRAM!
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 64  # 64 completions = 8 prompts per step (187 steps total per epoch)
+  save_total_limit: 2           # Only keep latest 2 checkpoints to avoid disk out-of-space
+  save_only_model: false        # Save optimizer states to allow resumption
+  save_steps: 50                # Save every 50 steps

@@ -241,11 +241,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         bf16=True,
         gradient_checkpointing=True,
 
-        # Saving — save_only_model to avoid ~6GB optimizer state per checkpoint
+        # Saving — allow saving optimizer states for resumption, limit to 2 checkpoints
         save_strategy="steps",
         save_steps=train_cfg.get("save_steps", 100),
-        save_total_limit=train_cfg.get("save_total_limit", 3),
-        save_only_model=True,
+        save_total_limit=train_cfg.get("save_total_limit", 2),
+        save_only_model=train_cfg.get("save_only_model", False),
         optim=train_cfg.get("optim", "adamw_torch"),
 
         # Logging
