@@ -682,9 +682,14 @@ class PrimeGRPOTrainer(GRPOTrainer):
         outcome_rewards = outcome_rewards_cpu.to(device)
         del outcome_rewards_cpu
 
-        # ── Step 6: Compute PRIME advantage ──
-        # Process returns: Return_process(t) = Σ_{s=t}^T r_φ(y_s)
-        process_returns = self._compute_process_returns(process_rewards, completion_mask)
+        # ── Step 6: Compute PRIME advantage (paper-faithful) ──
+
+        # --- Fix 2: batch_norm on PRM scores (like original dp_prime.py) ---
+        # Normalize token_level_scores so max cumulative return = 1.0
+        masked_scores = process_rewards * completion_mask
+        reverse_cumsum = torch.cumsum(masked_scores.flip(dims=[1]), dim=-1).flip(dims=[1])
+        norm_factor = reverse_cumsum.abs().max().clamp(min=1e-6)
+        process_rewards = process_rewards / norm_factor
 
         # Get baseline function
         baseline_fn = BASELINE_FUNCS[self.prime_baseline_type]
@@ -692,29 +697,17 @@ class PrimeGRPOTrainer(GRPOTrainer):
         if self.prime_baseline_type == "dpo_z":
             baseline_kwargs["beta"] = self.prime_beta
 
-        # --- Outcome component ---
+        # --- Outcome component (RLOO baseline, no separate normalization) ---
         outcome_baseline = baseline_fn(outcome_rewards, num_generations, **baseline_kwargs)
         outcome_component = outcome_rewards - outcome_baseline  # (local_B,)
 
-        # Normalize outcome component
-        outcome_std = outcome_component.std()
-        if outcome_std > 1e-8:
-            outcome_component = outcome_component / (outcome_std + 1e-4)
-
-        # --- Process component ---
-        # Per-sample total process reward for baseline
+        # --- Process component (RLOO baseline on total reward per sample) ---
         total_process = (process_rewards * completion_mask).sum(dim=1)  # (local_B,)
         process_baseline = baseline_fn(total_process, num_generations, **baseline_kwargs)
 
-        # Token-level: subtract per-sample baseline, then compute returns
+        # Token-level: subtract per-sample baseline spread across tokens, then compute returns
         process_centered = process_rewards - (process_baseline.unsqueeze(1) / completion_mask.sum(dim=1, keepdim=True).clamp(min=1))
         process_returns_centered = self._compute_process_returns(process_centered, completion_mask)
-
-        # Normalize process component
-        proc_vals = process_returns_centered[completion_mask.bool()]
-        proc_std = proc_vals.std() if proc_vals.numel() > 1 else torch.tensor(1.0, device=device)
-        if proc_std > 1e-8:
-            process_returns_centered = process_returns_centered / (proc_std + 1e-4)
 
         # --- Online prompt filter ---
         if self.prime_online_filter:
@@ -729,7 +722,6 @@ class PrimeGRPOTrainer(GRPOTrainer):
             self._metrics[mode]["prime/filtered_prompts_frac"].append(frac_filtered)
 
         # --- Combine: A_t = α · Return_process(t) + Return_outcome ---
-        # Extension 6.5: Curriculum — ramp α from 0→1 over warmup steps
         if self.curriculum_warmup_steps > 0:
             alpha = min(1.0, self._prime_step_counter / max(1, self.curriculum_warmup_steps))
         else:
@@ -737,6 +729,15 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
         # outcome_component is (B,), needs to be (B, 1) for broadcasting
         dense_advantages = alpha * process_returns_centered + outcome_component.unsqueeze(1)
+
+        # --- Fix 1: masked_whiten on final advantages (like original core_algos.py) ---
+        # This ensures advantages have mean≈0, std≈1, preventing runaway gradients
+        adv_vals = dense_advantages[completion_mask.bool()]
+        if adv_vals.numel() > 1:
+            adv_mean = adv_vals.mean()
+            adv_std = adv_vals.std().clamp(min=1e-8)
+            dense_advantages = (dense_advantages - adv_mean) / (adv_std + 1e-4)
+            dense_advantages = dense_advantages * completion_mask
 
         # Increment step counter for curriculum
         self._prime_step_counter += 1
@@ -798,12 +799,6 @@ def format_reward(completions, log_metric=None, **kwargs):
             score += 0.5
         if "\\boxed{" in content:
             score += 0.5
-
-        # Apply soft length penalty above 3000 tokens (approx 12000 characters)
-        approx_tokens = len(content) / 4.0
-        if approx_tokens > 3000.0:
-            penalty = 0.0001 * (approx_tokens - 3000.0)
-            score -= penalty
 
         if score >= 1.0:
             format_ok_count += 1

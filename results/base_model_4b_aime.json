@@ -1,0 +1,166 @@
+{
+  "aime2026": {
+    "accuracy": 66.67,
+    "metric": "pass@1",
+    "correct": 20,
+    "total": 30,
+    "format_compliance": 80.0,
+    "avg_response_length": 7454.2,
+    "details": [
+      {
+        "question": "Patrick started walking at a constant rate along a straight road from school to the park. One hour a...",
+        "ground_truth": "277",
+        "predicted": "277",
+        "correct": true,
+        "response_length": 1366
+      },
+      {
+        "question": "Find the number of positive integer palindromes written in base $10$ with no zero digits, and whose ...",
+        "ground_truth": "62",
+        "predicted": "62",
+        "correct": true,
+        "response_length": 2010
+      },
+      {
+        "question": "A hemisphere with radius $200$ sits on top of a horizontal circular disk with radius $200,$ and the ...",
+        "ground_truth": "79",
+        "predicted": "79",
+        "correct": true,
+        "response_length": 8737
+      },
+      {
+        "question": "Find the number of integers less than or equal to 100 that are equal to $a+b+ab$ for some choice of ...",
+        "ground_truth": "70",
+        "predicted": "70",
+        "correct": true,
+        "response_length": 10716
+      },
+      {
+        "question": "A plane contains points $A$ and $B$ with $AB = 1$. Point $A$ is rotated in the plane counterclockwis...",
+        "ground_truth": "65",
+        "predicted": "65",
+        "correct": true,
+        "response_length": 857
+      },
+      {
+        "question": "A real number $x$ satisfies $\\sqrt[20]{x^{\\log_{2026}x}}=26x$. What is the number of positive diviso...",
+        "ground_truth": "441",
+        "predicted": "441",
+        "correct": true,
+        "response_length": 840
+      },
+      {
+        "question": "\nFind the number of functions $\\pi$ mapping the set $A =\\{1,2,3,4,5,6\\}$ onto $A$ such that for ever...",
+        "ground_truth": "396",
+        "predicted": "396",
+        "correct": true,
+        "response_length": 1534
+      },
+      {
+        "question": "Let $N$ be the number of positive integer divisors of $17017^{17}$ that leave a remainder of $5$ whe...",
+        "ground_truth": "244",
+        "predicted": "244",
+        "correct": true,
+        "response_length": 1190
+      },
+      {
+        "question": "Joanne has a blank fair six-sided die and six stickers each displaying a different integer from 1 to...",
+        "ground_truth": "29",
+        "predicted": "31",
+        "correct": false,
+        "response_length": 6859
+      },
+      {
+        "question": "Let $\\triangle ABC$ have side lengths $AB = 13, BC = 14,$ and $CA = 15.$ Triangle $\\triangle A'B'C'$...",
+        "ground_truth": "156",
+        "predicted": null,
+        "correct": false,
+        "response_length": 11611
+      },
+      {
+        "question": "The integers from $1$ to $64$ are placed in some order into an $8 \\times 8$ grid of cells with one n...",
+        "ground_truth": "896",
+        "predicted": "584",
+        "correct": false,
+        "response_length": 17540
+      },
+      {
+        "question": "Triangle $\\triangle ABC$ lies in plane $\\mathcal P$ with $AB = 6, AC = 4,$ and $\\angle BAC = 90^\\cir...",
+        "ground_truth": "161",
+        "predicted": "161",
+        "correct": true,
+        "response_length": 6911
+      },
+      {
+        "question": "For each positive integer $r$ less than $502,$ define\n\\[\nS_r=\\sum_{m\\ge 0}\\dbinom{10000}{502n+r},\n\\]...",
+        "ground_truth": "39",
+        "predicted": "39",
+        "correct": true,
+        "response_length": 6665
+      },
+      {
+        "question": "In an equiangular pentagon, the sum of the squares of the side lengths equals $308,$ and the sum of ...",
+        "ground_truth": "681",
+        "predicted": "497",
+        "correct": false,
+        "response_length": 9264
+      },
+      {
+        "question": "Let $a, b,$ and $n$ be positive integers with both $a$ and $b$ greater than or equal to $2$ and less...",
+        "ground_truth": "83",
+        "predicted": null,
+        "correct": false,
+        "response_length": 13121
+      },
+      {
+        "question": "Find the sum of the $10$th terms of all arithmetic sequences of integers that have first term equal ...",
+        "ground_truth": "178",
+        "predicted": "178",
+        "correct": true,
+        "response_length": 789
+      },
+      {
+        "question": "The figure below shows a grid of $10$ squares in a row. Each square has a diagonal connecting its lo...",
+        "ground_truth": "243",
+        "predicted": "11.958",
+        "correct": false,
+        "response_length": 392
+      },
+      {
+        "question": "Let $ABCDE$ be a nonconvex pentagon with internal angles $\\angle A = \\angle E = 90^\\circ$ and $\\angl...",
+        "ground_truth": "503",
+        "predicted": null,
+        "correct": false,
+        "response_length": 16363
+      },
+      {
+        "question": "For each positive integer $n$ let $f(n)$ be the value of the base-ten numeral $n$ viewed in base $b$...",
+        "ground_truth": "279",
+        "predicted": "279",
+        "correct": true,
+        "response_length": 3705
+      },
+      {
+        "question": "An urn contains $n$ marbles. Each marble is either red or blue, and there are at least $7$ marbles o...",
+        "ground_truth": "190",
+        "predicted": "190",
+        "correct": true,
+        "response_length": 531
+      }
+    ]
+  },
+  "model": "Qwen/Qwen3.5-4B-Base",
+  "gpu_info": {
+    "gpu_0": {
+      "name": "NVIDIA H200",
+      "total_gb": 150.11,
+      "allocated_gb": 0.0,
+      "reserved_gb": 0.0,
+      "free_gb": 150.11
+    }
+  },
+  "_metadata": {
+    "timestamp": "2026-05-29T10:27:26.565993",
+    "hostname": "ubuntu-gpu-pod-vv-h200"
+  }
+}
