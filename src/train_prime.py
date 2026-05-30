@@ -384,7 +384,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
                         mask = am_gpu[start:end]
                         logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
                         logits = logits[:, :-1, :][:, -logits_to_keep:, :]
-                        logits.div_(self.temperature)
+                        # No temperature scaling for PRM/ref (use raw logits)
                         comp_ids = inp[:, -logits_to_keep:]
                         logps = selective_log_softmax(logits, comp_ids)
                         all_ref_logps.append(logps)
@@ -438,7 +438,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
                         mask = am_gpu[start:end]
                         out = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False)
                         logits = out.logits[:, :-1, :][:, -logits_to_keep:, :]
-                        logits.div_(self.temperature)
+                        # No temperature scaling for PRM/ref (use raw logits)
                         comp_ids = inp[:, -logits_to_keep:]
                         chunk_logps = selective_log_softmax(logits, comp_ids)
                         log_ratio = (chunk_logps - ref_logps[start:end]) * cm_gpu[start:end]
@@ -463,7 +463,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
                 mask = am_gpu[start:end]
                 logits = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
                 logits = logits[:, :-1, :][:, -logits_to_keep:, :]
-                logits.div_(self.temperature)
+                # No temperature scaling for PRM/ref (use raw logits)
                 comp_ids = inp[:, -logits_to_keep:]
                 prm_logps_chunk = selective_log_softmax(logits, comp_ids)
 
@@ -701,12 +701,26 @@ class PrimeGRPOTrainer(GRPOTrainer):
         outcome_baseline = baseline_fn(outcome_rewards, num_generations, **baseline_kwargs)
         outcome_component = outcome_rewards - outcome_baseline  # (local_B,)
 
-        # --- Process component (RLOO baseline on total reward per sample) ---
-        total_process = (process_rewards * completion_mask).sum(dim=1)  # (local_B,)
-        process_baseline = baseline_fn(total_process, num_generations, **baseline_kwargs)
+        # --- Process component (RLOO baseline on per-sample MEAN reward) ---
+        # Matches original verl dp_prime.py + core_algos.py:
+        #   1. Compute per-sample mean of token-level process rewards
+        #   2. RLOO baseline from those per-sample means
+        #   3. Each token: r_{i,t} * K/(K-1) - sum_means/(K-1)
+        #   4. Compute discounted returns on centered token rewards
+        K = num_generations
+        T = process_rewards.shape[1]
+        num_tokens_per_sample = completion_mask.sum(dim=1).clamp(min=1)  # (B,)
+        per_sample_mean = (process_rewards * completion_mask).sum(dim=1) / num_tokens_per_sample  # (B,)
 
-        # Token-level: subtract per-sample baseline spread across tokens, then compute returns
-        process_centered = process_rewards - (process_baseline.unsqueeze(1) / completion_mask.sum(dim=1, keepdim=True).clamp(min=1))
+        # Group means and compute RLOO-style baseline
+        grouped_means = per_sample_mean.view(-1, K)  # (num_prompts, K)
+        sum_means = grouped_means.sum(dim=1, keepdim=True)  # (num_prompts, 1)
+        # RLOO: each token gets r * K/(K-1) - sum_means/(K-1)
+        baseline_per_prompt = sum_means / max(K - 1, 1)  # (num_prompts, 1)
+        baseline = baseline_per_prompt.expand_as(grouped_means).reshape(-1)  # (B,)
+
+        process_centered = process_rewards * K / max(K - 1, 1) - baseline.unsqueeze(1)
+        process_centered = process_centered * completion_mask
         process_returns_centered = self._compute_process_returns(process_centered, completion_mask)
 
         # --- Online prompt filter ---
@@ -902,7 +916,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
             }
         ),
         use_liger_kernel=False,  # PRIME needs (B,T) token-level advantages; Liger expects (B,)
-        reward_weights=[1.0, 0.5],
+        reward_weights=[1.0],  # Only accuracy_reward; PRIME overrides advantages entirely
         model_init_kwargs={
             "torch_dtype": "bfloat16",
             "attn_implementation": "sdpa",
@@ -914,7 +928,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         model=model_name,
         args=grpo_args,
         train_dataset=train_dataset,
-        reward_funcs=[accuracy_reward, format_reward],
+        reward_funcs=[accuracy_reward],  # format_reward unused — PRIME overrides advantages
     )
 
     logger.info("Starting PRIME-GRPO training...")
