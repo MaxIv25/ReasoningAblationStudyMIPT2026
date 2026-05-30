@@ -9,6 +9,7 @@ grpo:
   vllm_enable_sleep_mode: false  # Prevent losing synchronized weights in colocated mode
   vllm_importance_sampling_correction: false
   vllm_gpu_memory_utilization: 0.25  # Space for vLLM KV-Cache blocks
+  temperature: 0.7
 
 prime:
   enabled: true
@@ -17,7 +18,7 @@ prime:
   prm_update_epochs: 1          # Set to 1 to cut PRM update time in half and prevent overfitting
   advantage_baseline: "rloo"
   online_filter: true
-  gamma: 1.0
+  gamma: 0.99
   prm_ref_batch_size: 8        # Stable and extremely fast reference model forward pass
   prm_grad_batch_size: 1        # Keep at 1 for 100% OOM-proof stability on H200 with 16K sequences
   cpu_offload_policy: false     # Policy model permanently on GPU to save massive PCIe latency

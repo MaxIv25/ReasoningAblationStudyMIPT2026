@@ -9,6 +9,7 @@ grpo:
   max_completion_length: 16384
   vllm_gpu_memory_utilization: 0.25  # Space for vLLM KV-Cache blocks (matches PRIME)
   vllm_enable_sleep_mode: false  # Disable sleep mode to preserve synchronized weights in colocated mode
+  temperature: 0.7
 
 training:
   optim: paged_adamw_8bit       # 8-bit optimizer to save VRAM

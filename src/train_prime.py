@@ -798,6 +798,13 @@ def format_reward(completions, log_metric=None, **kwargs):
             score += 0.5
         if "\\boxed{" in content:
             score += 0.5
+
+        # Apply soft length penalty above 3000 tokens (approx 12000 characters)
+        approx_tokens = len(content) / 4.0
+        if approx_tokens > 3000.0:
+            penalty = 0.0001 * (approx_tokens - 3000.0)
+            score -= penalty
+
         if score >= 1.0:
             format_ok_count += 1
         rewards.append(score)
