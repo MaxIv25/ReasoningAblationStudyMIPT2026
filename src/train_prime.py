@@ -202,6 +202,44 @@ class PrimeGRPOTrainer(GRPOTrainer):
             logger.info(f"PRIME Z(x)-calibrated PRM loss enabled")
         logger.info(f"PRIME memory: Policy offload={self.cpu_offload_policy}, Aux offload={self.cpu_offload_aux}")
 
+    # ── PRM Checkpointing ──
+
+    def _save_checkpoint(self, model, trial, metrics=None):
+        """Override to also save PRM weights + optimizer alongside policy checkpoint."""
+        super()._save_checkpoint(model, trial, metrics=metrics)
+        checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
+        prm_dir = os.path.join(checkpoint_dir, "prm")
+        os.makedirs(prm_dir, exist_ok=True)
+        prm_was_on_gpu = next(self.prm_model.parameters()).device.type == "cuda"
+        if prm_was_on_gpu:
+            self.prm_model.to("cpu")
+        torch.save(self.prm_model.state_dict(), os.path.join(prm_dir, "model.pt"))
+        torch.save(self.prm_optimizer.state_dict(), os.path.join(prm_dir, "optimizer.pt"))
+        torch.save({"prime_step_counter": self._prime_step_counter}, os.path.join(prm_dir, "state.pt"))
+        if prm_was_on_gpu:
+            self.prm_model.to(self._gpu_device)
+        logger.info(f"  [PRM] Saved PRM checkpoint to {prm_dir}")
+
+    def _load_prm_checkpoint(self, checkpoint_path):
+        """Load PRM weights + optimizer from a checkpoint directory."""
+        prm_dir = os.path.join(checkpoint_path, "prm")
+        if not os.path.exists(prm_dir):
+            logger.warning(f"  [PRM] No PRM checkpoint in {checkpoint_path}, starting PRM fresh")
+            return
+        model_path = os.path.join(prm_dir, "model.pt")
+        opt_path = os.path.join(prm_dir, "optimizer.pt")
+        state_path = os.path.join(prm_dir, "state.pt")
+        if os.path.exists(model_path):
+            self.prm_model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
+            logger.info(f"  [PRM] Loaded PRM weights from {model_path}")
+        if os.path.exists(opt_path):
+            self.prm_optimizer.load_state_dict(torch.load(opt_path, map_location="cpu", weights_only=True))
+            logger.info(f"  [PRM] Loaded PRM optimizer from {opt_path}")
+        if os.path.exists(state_path):
+            state = torch.load(state_path, map_location="cpu", weights_only=True)
+            self._prime_step_counter = state.get("prime_step_counter", 0)
+            logger.info(f"  [PRM] Restored prime_step_counter={self._prime_step_counter}")
+
     def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
         """Get per-token log-probs from a model (no grad)."""
         with torch.no_grad():
@@ -944,6 +982,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
             logger.info("No checkpoints found, starting fresh")
     elif resume_ckpt:
         logger.info(f"Resuming from checkpoint: {resume_ckpt}")
+
+    # Load PRM weights from checkpoint (HF Trainer only restores policy)
+    if resume_ckpt:
+        trainer._load_prm_checkpoint(resume_ckpt)
+
     train_result = trainer.train(resume_from_checkpoint=resume_ckpt)
 
     logger.info(f"Saving model to {output_dir}")
