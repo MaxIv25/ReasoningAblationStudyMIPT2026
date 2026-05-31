@@ -932,7 +932,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
     )
 
     # Resume from checkpoint: true = auto-detect latest, string = explicit path, null = fresh
-    resume_ckpt = cfg.get("training", {}).get("resume_from_checkpoint", None)
+    resume_ckpt = config.get("training", {}).get("resume_from_checkpoint", None)
     if resume_ckpt is True:
         import glob
         ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")),
