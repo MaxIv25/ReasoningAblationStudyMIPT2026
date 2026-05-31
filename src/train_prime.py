@@ -931,8 +931,20 @@ def train(config: dict, data_dir: str = None, output_dir: str = None):
         reward_funcs=[accuracy_reward],  # format_reward unused — PRIME overrides advantages
     )
 
-    logger.info("Starting PRIME-GRPO training...")
-    train_result = trainer.train()
+    # Resume from checkpoint: true = auto-detect latest, string = explicit path, null = fresh
+    resume_ckpt = cfg.get("training", {}).get("resume_from_checkpoint", None)
+    if resume_ckpt is True:
+        import glob
+        ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")),
+                       key=lambda p: int(p.split("-")[-1]))
+        resume_ckpt = ckpts[-1] if ckpts else None
+        if resume_ckpt:
+            logger.info(f"Auto-resuming from latest checkpoint: {resume_ckpt}")
+        else:
+            logger.info("No checkpoints found, starting fresh")
+    elif resume_ckpt:
+        logger.info(f"Resuming from checkpoint: {resume_ckpt}")
+    train_result = trainer.train(resume_from_checkpoint=resume_ckpt)
 
     logger.info(f"Saving model to {output_dir}")
     trainer.save_model(output_dir)

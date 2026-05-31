@@ -31,3 +31,4 @@ training:
   save_total_limit: 2           # Only keep latest 2 checkpoints to avoid disk out-of-space
   save_only_model: false        # Save optimizer states to allow resumption
   save_steps: 50                # Save every 50 steps
+  resume_from_checkpoint: true   # Auto-detect latest checkpoint in output_dir
