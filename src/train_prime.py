@@ -206,7 +206,7 @@ class PrimeGRPOTrainer(GRPOTrainer):
 
     def _save_checkpoint(self, model, trial, metrics=None):
         """Override to also save PRM weights + optimizer alongside policy checkpoint."""
-        super()._save_checkpoint(model, trial, metrics=metrics)
+        super()._save_checkpoint(model, trial)
         checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
         prm_dir = os.path.join(checkpoint_dir, "prm")
         os.makedirs(prm_dir, exist_ok=True)
