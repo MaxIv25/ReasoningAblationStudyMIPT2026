@@ -43,12 +43,24 @@ LoRA здесь нормальна как memory/speed ablation: при `r=16` �
 
 ## Environment
 
-Зависимости pinned в `pyproject.toml` и `uv.lock`:
+Зависимости pinned в `pyproject.toml` и `uv.lock`; lock ограничен целевыми
+Linux x86_64 research servers:
 
 ```bash
 uv sync --frozen
 uv run pytest -q
 ```
+
+На A100 используется default environment без TileLang: FLA работает через
+Triton. Для Hopper/H200 TileLang доступен только как явный extra:
+
+```bash
+uv sync --frozen --extra hopper
+```
+
+Это разделение обязательно для текущего pin: FLA 0.5.0 импортирует
+TileLang/TVM раньше, чем проверяет `FLA_TILELANG=0`, а TileLang 0.1.9 на A100
+может падать при импорте с duplicate registration `ffi.Tensor`.
 
 На H200 выбран существующий environment `~/opt_project/venv`. В нём `torch
 2.10.0`, `transformers 5.8.1`, `trl 1.2.0`, `peft 0.19.1`, `liger-kernel

@@ -15,7 +15,7 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
 - [ ] Phase 7: Complete GPU integration, memory profiling, and save/resume verification
 - [x] Phase 8: Restart constant-LR `5e-6` GRPO safely on H200 GPU 7
 - [x] Phase 9: Audit, commit, and push the reproducible research worktree
-- [ ] Phase 10: Bootstrap a thread-limited environment and artifacts on `ssh opt`
+- [x] Phase 10: Bootstrap a thread-limited environment and artifacts on `ssh opt`
 - [ ] Phase 11: Validate and launch constant-LR `1e-5` GRPO on `ssh opt`
 - [ ] Phase 12: Record multi-server provenance, runtime gates, and handoff
 
@@ -59,10 +59,17 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
   tracked transfer корректно продолжает копирование каталога без удаления partial artifact.
 - Одна orchestration-сессия прервалась во время долгого `scp -3`; сам transfer
   был перезапущен как отдельная наблюдаемая PTY-сессия и показывает монотонный progress.
+- Первый A100 smoke завершился до model load: FLA 0.5.0 импортировал TileLang
+  до проверки `FLA_TILELANG=0`, а bundled TVM из TileLang 0.1.9 конфликтовал
+  с `tvm_ffi` при регистрации `ffi.Tensor`. Minimal import воспроизводил
+  failure 2/2 и проходил 2/2 без TileLang; dependency сделана Hopper-only extra.
+- Две попытки `uv lock --offline` не нашли registry metadata в локальных
+  caches, а локальный online resolver завис на network metadata. Lock был
+  безопасно сгенерирован online на `ssh opt` за 6.94 s с concurrency=2.
 
 ## Status
 
-**Phase 10 active** — commits `517dd2a` and `d9d0945` are pushed; recoverable
-`5e-6` is live on H200 GPU 7 and has verified post-reload sync through step 3.
-The locked opt environment passes 89 CPU tests with two threads; finish and
-checksum the custom merged SFT transfer before the A100 `1e-5` smoke.
+**Phase 11 active** — custom merged SFT and both datasets match H200 SHA-256
+manifests on `ssh opt`. The A100 default environment excludes optional
+TileLang, passes the original Qwen3.5 import loop twice and the full 91-test
+suite with two threads. Re-run the two-step GPU smoke before the full `1e-5`.
