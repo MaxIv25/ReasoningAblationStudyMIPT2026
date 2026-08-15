@@ -314,3 +314,42 @@ length `6004`, clipped ratio `.14`. Это подтверждает одинак
 - vLLM initialized and step-0 post-reload sync passed
   (`max_diff=0`). Baseline validation is still running; full run remains
   non-evidence until a clean finish and fresh frozen-val `maj@8`.
+
+Runtime update:
+
+- Initial frozen validation completed in `1052 s`: accuracy `.62`, mean
+  length `6519`, clipped ratio `.17`, max length `16384`.
+- First 64-trajectory optimizer cycle completed about `14:07` after
+  validation; step-1 post-update canary has
+  `changed=true/resident max diff=0`. No OOM/NaN/traceback.
+- A foreign GPU0 training job started after this run and holds about 19.7 GiB
+  in addition to 11.3 GiB older allocations. Our steady process allocation is
+  about 30.6 GiB; transient total-GPU peak observed about 73.6 GiB, leaving
+  roughly 7.6 GiB minimum reserve. Current reserve after step 1 was 17.7 GiB.
+- One-step estimate at current shared throughput is about 44 h for updates plus
+  2.5–3 h validation overhead. This is preliminary until steps 5–10 and must
+  not be compared to H200 wall-clock.
+
+### Cross-server determinism and performance diagnosis
+
+- Start validation на H200 (`.68`) и A100 (`.62`) нельзя интерпретировать как
+  изменение качества: это `G=1` stochastic accuracy на 100 prompts, а не
+  `maj@8`. Разница равна 6 задачам; standard error одной такой оценки около
+  4.8 percentage points при accuracy около `.65`.
+- Dataset и policy идентичны: validation Arrow SHA-256 `1b75930e...`, merged
+  model `ad95d846...`; hashes `train_grpo.py`, memory-bounded loss и base
+  configs также совпадают. Для первых 64 train prompts prompt hash совпал, но
+  completion hash различается уже на step 0, до optimizer update. Следовательно,
+  одинаковый seed не даёт byte-identical sampling между H200 и A100 kernels.
+- Execution backend не одинаков. H200 использует `flash_attention_2`,
+  `flash-attn 2.8.3`, `causal-conv1d 1.6.1` и FLA. A100 использует prebuilt
+  PyTorch SDPA Flash kernel и FLA, но без `causal-conv1d`; convolutional part
+  Qwen3.5 linear-attention layers уходит в PyTorch fallback. Для
+  `causal-conv1d 1.6.1` binary-only resolver не нашёл usable wheel; source
+  build на shared 32-core host не запускался.
+- Главные причины wall-clock regression: A100 80GB PCIe существенно медленнее
+  H200 на длинной autoregressive generation, fallback выше и concurrent
+  foreign job около 19.7 GiB/100% shared GPU utilization. Поэтому A100 run —
+  отдельная stochastic replication для LR `1e-5`, не strict paired trajectory
+  с H200. Сравнение качества выполняется позднее единым frozen `maj@8`
+  evaluator на одной hardware/software stack.
