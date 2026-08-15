@@ -7,11 +7,83 @@ import os
 import re
 import time
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime
 
 import yaml
 import torch
+
+
+_LATEX_ATOM = r"(?:\\[A-Za-z]+|[A-Za-z0-9])"
+_COMPACT_FRACTION = re.compile(
+    rf"\\frac\s*(?!\{{)({_LATEX_ATOM})\s*(?!\{{)({_LATEX_ATOM})"
+)
+_COMPACT_SQRT = re.compile(rf"\\sqrt\s*(?!\[|\{{)({_LATEX_ATOM})")
+_THOUSANDS_SEPARATOR = re.compile(r"(?<=\d),(?=\d{3}(?:\D|$))")
+_NUMERIC_BASE_PATTERN = re.compile(r"(\d+)\s*_\s*(?:\{(\d+)\}|(\d+))")
+
+
+def _prepare_math_text(text: str) -> str:
+    """Apply only semantics-preserving normalization before Math-Verify."""
+    prepared = _THOUSANDS_SEPARATOR.sub("", text.strip())
+    prepared = prepared.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
+    prepared = _COMPACT_FRACTION.sub(r"\\frac{\1}{\2}", prepared)
+    prepared = _COMPACT_SQRT.sub(r"\\sqrt{\1}", prepared)
+    return re.sub(r"(?<!\\)\bsqrt\(([^()]*)\)", r"\\sqrt{\1}", prepared)
+
+
+def _numeric_base_annotation(text: str) -> tuple[str, str] | None:
+    match = _NUMERIC_BASE_PATTERN.search(text)
+    if match is None:
+        return None
+    return match.group(1), match.group(2) or match.group(3) or ""
+
+
+def _has_structural_mismatch(reference: str, prediction: str) -> bool:
+    reference_base = _numeric_base_annotation(reference)
+    return (
+        reference_base is not None
+        and _numeric_base_annotation(prediction) != reference_base
+    )
+
+
+def _parse_math_answer(text: str):
+    """Parse an already extracted answer with the strict reward profile."""
+    from math_verify import (
+        ExprExtractionConfig,
+        LatexExtractionConfig,
+        LatexNormalizationConfig,
+        parse,
+    )
+
+    normalization = LatexNormalizationConfig(
+        basic_latex=True,
+        units=True,
+        malformed_operators=False,
+        nits=False,
+        boxed="all",
+        equations=False,
+    )
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    prepared = _prepare_math_text(text)
+    if not (prepared.startswith("$") and prepared.endswith("$")):
+        prepared = f"${prepared}$"
+    return parse(
+        prepared,
+        extraction_config=(
+            LatexExtractionConfig(
+                try_extract_without_anchor=True,
+                boxed_match_priority=0,
+                normalization_config=normalization,
+            ),
+            ExprExtractionConfig(try_extract_without_anchor=True),
+        ),
+        fallback_mode="no_fallback",
+        extraction_mode="first_match",
+        parsing_timeout=5 if is_main_thread else None,
+        raise_on_error=False,
+    )
 
 
 def setup_logging(name: str = "sft_ablation", level=logging.INFO) -> logging.Logger:
@@ -32,11 +104,11 @@ def setup_logging(name: str = "sft_ablation", level=logging.INFO) -> logging.Log
 def load_config(config_path: str, base_config_path: str = None) -> dict:
     """
     Загрузка YAML конфига с наследованием от base.
-    
+
     Args:
         config_path: Путь к конфигу эксперимента
         base_config_path: Путь к базовому конфигу (если None — ищем configs/base.yaml)
-    
+
     Returns:
         Мёрженный конфиг
     """
@@ -50,10 +122,20 @@ def load_config(config_path: str, base_config_path: str = None) -> dict:
         with open(base_config_path) as f:
             config = yaml.safe_load(f) or {}
 
-    # Мёржим с конфигом эксперимента
+    # Мёржим с конфигом эксперимента. Optional ``inherits`` is resolved
+    # relative to the experiment file and layered on top of the default base.
     if config_path and Path(config_path).exists():
+        config_path = Path(config_path)
         with open(config_path) as f:
             exp_config = yaml.safe_load(f) or {}
+        inherited = exp_config.pop("inherits", None)
+        if inherited:
+            inherited_path = Path(inherited)
+            if not inherited_path.is_absolute():
+                inherited_path = config_path.parent / inherited_path
+            config = load_config(
+                str(inherited_path), base_config_path=str(base_config_path)
+            )
         config = deep_merge(config, exp_config)
 
     return config
@@ -73,12 +155,12 @@ def deep_merge(base: dict, override: dict) -> dict:
 def extract_boxed_answer(text: str) -> str | None:
     """
     Извлечение ответа из \\boxed{...}.
-    
+
     Использует stack-based matching для корректной обработки
     произвольной вложенности скобок:
         \\boxed{\\frac{1}{\\sqrt{2}}}  — 3 уровня
         \\boxed{\\left(\\frac{a}{b}\\right)}  — 2 уровня
-    
+
     Берёт ПОСЛЕДНИЙ \\boxed{...} в тексте (финальный ответ).
     """
     idx = text.rfind("\\boxed{")
@@ -88,13 +170,13 @@ def extract_boxed_answer(text: str) -> str | None:
     depth = 1
     i = start
     while i < len(text) and depth > 0:
-        if text[i] == '{':
+        if text[i] == "{":
             depth += 1
-        elif text[i] == '}':
+        elif text[i] == "}":
             depth -= 1
         i += 1
     if depth == 0:
-        return text[start:i-1].strip()
+        return text[start : i - 1].strip()
     return None
 
 
@@ -140,57 +222,40 @@ def normalize_latex(s: str) -> str:
 
 
 def verify_answer(predicted: str | None, ground_truth: str) -> bool:
-    """
-    Verify if predicted answer matches ground truth.
+    """Conservatively compare extracted answers for online RL reward.
 
-    Pipeline:
-      1. Normalize LaTeX (dfrac→frac, strip \\left/\\right, etc.)
-      2. Exact string match after normalization
-      3. Try math_verify on normalized strings
-      4. Try sympy-based symbolic comparison for numeric expressions
-      5. Fall back to normalized string comparison (strip all formatting)
+    The verifier intentionally fails closed: only strict Math-Verify equivalence
+    is accepted, and presentation normalization is limited to thousands
+    separators. Structural annotations such as numeric bases are checked before
+    symbolic comparison. This avoids reward-hacking false positives from the old
+    fallback that removed every comma and most formatting.
     """
-    if predicted is None:
+    if predicted is None or _has_structural_mismatch(ground_truth, predicted):
         return False
 
-    predicted = normalize_latex(predicted)
-    ground_truth = normalize_latex(ground_truth)
-
-    # Exact match after normalization (catches most dfrac/frac cases)
-    if predicted == ground_truth:
-        return True
-
-    # Try math_verify
     try:
-        from math_verify import parse, verify
-        result = verify(parse(ground_truth), parse(predicted))
-        if result:
-            return True
-    except Exception:
-        pass
+        from math_verify import verify
 
-    # Try sympy for numeric/algebraic expressions
-    try:
-        import sympy
-        gt_expr = sympy.sympify(ground_truth.replace("\\", ""))
-        pred_expr = sympy.sympify(predicted.replace("\\", ""))
-        if sympy.simplify(gt_expr - pred_expr) == 0:
-            return True
-    except Exception:
-        pass
-
-    # Fallback: strip all formatting and compare
-    def _strip_compare(s):
-        s = s.replace("\\$", "").replace("$", "")
-        s = s.replace("\\,", "").replace(",", "")
-        s = s.replace(" ", "").strip()
-        try:
-            return float(s)
-        except ValueError:
-            return s.lower()
-
-    return _strip_compare(predicted) == _strip_compare(ground_truth)
-
+        reference = _parse_math_answer(ground_truth)
+        prediction = _parse_math_answer(predicted)
+        if not reference or not prediction:
+            return False
+        return bool(
+            verify(
+                reference,
+                prediction,
+                float_rounding=9,
+                strict=True,
+                timeout_seconds=(
+                    5
+                    if threading.current_thread() is threading.main_thread()
+                    else None
+                ),
+                raise_on_error=False,
+            )
+        )
+    except (ImportError, RuntimeError, TypeError, ValueError):
+        return False
 
 def save_results(results: dict, output_path: str):
     """Сохранение результатов в JSON."""

@@ -1,0 +1,6 @@
+inherits: sft_lora_r64_16k_smoke.yaml
+run_name: "sft_lora_r64_16k_smoke_b8"
+
+training:
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2

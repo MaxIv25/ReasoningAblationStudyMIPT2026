@@ -1,0 +1,7 @@
+inherits: "grpo_vanilla_constant_with_val.yaml"
+run_name: "grpo_vanilla_constant_lr5e6_with_unseen_val"
+
+# Learning-rate ablation against grpo_vanilla_constant_with_val.yaml.
+# Keep the constant scheduler and every other run parameter identical.
+training:
+  learning_rate: 5.0e-6

@@ -4,7 +4,7 @@
 # ============================================================
 
 model:
-  name: "Qwen/Qwen3.5-0.8B-Base"
+  name: "Qwen/Qwen3.5-0.8B"
   torch_dtype: "bfloat16"
 
 grpo:
@@ -13,7 +13,9 @@ grpo:
 
   # Generation
   num_generations: 8            # Group size G — 8 completions per prompt
+  max_prompt_length: 1024
   max_completion_length: 16384  # 16K tokens — fits on H200 with 0.8B model
+  max_model_len: 17408          # prompt cap + completion cap
 
   # Dataset size for RL training
   # Literature: TinyZero uses 3K for 0.5B, SimpleRL uses 8K for 1.5B
@@ -28,6 +30,11 @@ grpo:
 
   # Reward scaling
   scale_rewards: "group"       # Normalize by group std (default GRPO)
+  # Keep the baseline reward identical to PRIME. Format compliance is evaluated
+  # separately; use a positive value only for an explicit reward ablation.
+  format_reward_weight: 0.0
+  log_completions: true
+  num_completions_to_print: 8
 
   # Truncation
   mask_truncated_completions: true  # Ignore completions that hit max length
@@ -39,10 +46,14 @@ grpo:
 
   # vLLM
   use_vllm: true
-  vllm_mode: "colocate"             # Same process — weights always synced, no NCCL issues
-  vllm_gpu_memory_utilization: 0.3  # 30% GPU for KV cache (~45GB on H200)
-  vllm_importance_sampling_correction: false  # Disable: colocate weights are always synced,
-                                              # logprob diffs are numerical noise, not real shift.
+  vllm_mode: "colocate"             # In-process path; avoids trl-serve NCCL/RPC sync
+  # Actor and vLLM peaks do not overlap with colocate sleep mode. 0.25 lets
+  # vLLM schedule the full 64-sequence rollout batch with fewer KV preemptions.
+  vllm_gpu_memory_utilization: 0.25
+  verify_vllm_weight_sync: true      # Compare actual loaded tensor to resident vLLM tensor
+  require_vllm_weight_change_after_step: true  # Fail on stale/zero-update policy
+  vllm_importance_sampling_correction: false  # Sync is checked numerically; remaining
+                                              # HF-vLLM differences are numerical noise.
 
   # Sampling for RL generation — HIGH diversity for meaningful advantages
   # Standard in literature: DeepSeek-R1, GRPO, DAPO, PRIME all use temp=1.0
@@ -52,8 +63,8 @@ grpo:
   top_k: 0
 
 training:
-  per_device_train_batch_size: 2   # 2 completions per micro-batch (vocab 248K limits this)
-  gradient_accumulation_steps: 32  # 32 × 2 = 64 completions = 8 prompts per optimizer step
+  per_device_train_batch_size: 8   # Profiled full 16K step: ~32 GiB peak
+  gradient_accumulation_steps: 8   # 8 × 8 = 64 completions = 8 prompts per optimizer step
                                    # Matches generation_batch_size → 1 gen call per optimizer step
                                    # Literature: TinyZero/SimpleRL use 8 prompts per step
   learning_rate: 1.5e-6            # 0.8B model needs higher LR than 7B (PRIME paper used 1e-6 for 7B)
@@ -68,7 +79,16 @@ training:
   save_steps: 75                    # saves at 75,150,225,300,375 — only last 2 kept on disk
   save_total_limit: 2
   logging_steps: 5                 # Frequent logging for short run
-  dataloader_num_workers: 4        # Async data loading
+  dataloader_num_workers: 0        # Avoid shared-server CPU pressure
+
+peft:
+  enabled: true
+  actor: true
+  r: 16
+  alpha: 32
+  dropout: 0.0
+  target_modules: "all-linear"
+  bias: "none"
 
 eval:
   benchmarks:

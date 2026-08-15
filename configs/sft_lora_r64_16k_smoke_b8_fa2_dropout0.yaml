@@ -1,0 +1,6 @@
+inherits: sft_lora_r64_16k_smoke_b8_fa2.yaml
+run_name: "sft_lora_r64_16k_smoke_b8_fa2_dropout0"
+
+training:
+  lora:
+    lora_dropout: 0.0

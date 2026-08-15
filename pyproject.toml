@@ -1,0 +1,32 @@
+[project]
+name = "reasoning-ablation-prime"
+version = "0.1.0"
+description = "Faithful PRIME reproduction and isolated RL research extensions"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "accelerate==1.13.0",
+  "datasets==4.8.4",
+  "flash-linear-attention==0.5.0",
+  "liger-kernel==0.7.0",
+  "math-verify==0.9.0",
+  "ninja==1.13.0",
+  "peft==0.19.1",
+  "pyyaml==6.0.3",
+  "tensorboard==2.20.0",
+  "tilelang==0.1.9",
+  "torch==2.10.0",
+  "transformers==5.8.1",
+  "trl==1.2.0",
+  "vllm==0.19.1",
+]
+
+[dependency-groups]
+dev = ["pytest==9.0.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.uv]
+package = false

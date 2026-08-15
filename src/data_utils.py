@@ -185,7 +185,8 @@ def format_for_sft(
         add_think_prefix: If True, ensure trace starts with <think>
     
     Returns:
-        Dataset with "messages" column for TRL SFTTrainer
+        Conversational prompt-completion dataset. This lets TRL create a
+        completion mask so user/problem tokens receive label ``-100``.
     """
 
     def format_fn(example):
@@ -195,19 +196,15 @@ def format_for_sft(
         if add_think_prefix and not trace.strip().startswith("<think>"):
             trace = "<think>\n" + trace
 
-        messages = [
-            {"role": "user", "content": example["problem"]},
-            {"role": "assistant", "content": trace},
-        ]
-
         return {
-            "messages": messages,
+            "prompt": [{"role": "user", "content": example["problem"]}],
+            "completion": [{"role": "assistant", "content": trace}],
             "solution_length": example.get("trace_length", len(trace.split())),
             "difficulty": example.get("difficulty", 0.0),
         }
 
-    formatted = dataset.map(format_fn, num_proc=4)
-    logger.info(f"Formatted {len(formatted)} examples into chat messages")
+    formatted = dataset.map(format_fn)
+    logger.info(f"Formatted {len(formatted)} examples as prompt-completion pairs")
 
     # Log stats
     lengths = formatted["solution_length"]
@@ -218,6 +215,54 @@ def format_for_sft(
     )
 
     return formatted
+
+
+def ensure_prompt_completion_format(dataset: Dataset, tokenizer=None) -> Dataset:
+    """Render exact raw prompt/completion strings with an auditable boundary.
+
+    Qwen3.5's ``add_generation_prompt=True`` renders an empty thinking block,
+    so separately templating the prompt and full conversation is not prefix
+    stable. Instead, render the complete conversation once and split directly
+    before the assistant content. Concatenating the returned strings therefore
+    exactly recovers the training text while masking every prompt token.
+    ``tokenizer`` is retained as an optional compatibility argument; rendering
+    is deliberately explicit so the prompt/completion boundary cannot drift
+    across Transformers versions.
+    """
+    columns = set(dataset.column_names)
+    if {"prompt", "completion"}.issubset(columns):
+        source_column = None
+    elif "messages" in columns:
+        source_column = "messages"
+    else:
+        raise ValueError(
+            "SFT data must contain prompt/completion or legacy messages columns"
+        )
+
+    def render_and_split(example):
+        messages = (
+            example[source_column]
+            if source_column is not None
+            else list(example["prompt"]) + list(example["completion"])
+        )
+        if [m.get("role") for m in messages] != ["user", "assistant"]:
+            raise ValueError("SFT bootstrap expects exactly one user and one assistant message")
+        user_content = messages[0]["content"]
+        assistant_content = messages[1]["content"]
+        prompt = (
+            f"<|im_start|>user\n{user_content}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+        completion = assistant_content
+        if not completion.endswith("<|im_end|>"):
+            completion += "<|im_end|>\n"
+        return {
+            "prompt": prompt,
+            "completion": completion,
+        }
+
+    remove_columns = [c for c in ("messages", "prompt", "completion") if c in columns]
+    return dataset.map(render_and_split, remove_columns=remove_columns)
 
 
 # ──────────────────────────────────────────────────────────────

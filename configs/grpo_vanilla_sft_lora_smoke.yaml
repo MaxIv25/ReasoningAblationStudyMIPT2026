@@ -1,0 +1,14 @@
+inherits: "grpo_vanilla_sft_lora.yaml"
+run_name: "grpo_vanilla_from_sft_lora_smoke"
+
+grpo:
+  num_samples: 16
+  generation_batch_size: 8
+
+training:
+  max_steps: 2
+  gradient_accumulation_steps: 8
+  lr_scheduler_type: "constant"
+  warmup_ratio: 0.0
+  save_steps: 1000
+  logging_steps: 1

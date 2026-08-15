@@ -1,0 +1,12 @@
+inherits: "prime_research_16k_smoke.yaml"
+run_name: "prime_research_16k_matched_lr_gate"
+
+grpo:
+  num_samples: 8
+  generation_batch_size: 8
+
+training:
+  max_steps: 1
+  gradient_accumulation_steps: 8
+  save_steps: 1000
+  logging_steps: 1

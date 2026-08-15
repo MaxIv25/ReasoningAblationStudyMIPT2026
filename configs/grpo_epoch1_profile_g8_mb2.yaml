@@ -1,0 +1,13 @@
+inherits: "grpo_vanilla_sft_lora_smoke.yaml"
+run_name: "grpo_final_profile_g8_mb2"
+
+grpo:
+  num_samples: 64
+  generation_batch_size: 64
+
+training:
+  max_steps: 1
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 32
+  save_steps: 1000
+  logging_steps: 1

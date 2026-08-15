@@ -1,108 +1,108 @@
-# Reasoning Ablation Study — MIPT 2026
+# PRIME RL reproduction — Qwen3.5-0.8B
 
-**Ablation study методов SFT и GRPO для обучения LLM рассуждению**
+Текущая цель проекта — test-backed воспроизведение original PRIME поверх нового LoRA-SFT checkpoint `Qwen3.5-0.8B-Base`, а затем изолированные проверки четырёх research ideas. Старые SFT/GRPO эксперименты сохранены как legacy context и не являются evidence для новой линии.
 
-Проект исследует полный пайплайн обучения reasoning LLM (SFT → GRPO → RS+SFT → final GRPO), воспроизводя подход DeepSeek-R1 на модели Qwen3.5-0.8B-Base.
+> Статус: GPU-validated research implementation. CPU suite проходит
+> (`89 passed`), LoRA SFT завершён и merged, exact token-chunked GRPO/PRIME
+> math, save/resume и post-reload HF↔vLLM weight sync проверены. Vanilla GRPO
+> и DPO-Z прошли substantive single-GPU runs; PRIME reproduction и frozen
+> `maj@8` evaluation ещё не завершены, поэтому paper-level claims пока нет.
 
-## Модель и данные
+## Что реализовано
 
-| Компонент | Описание |
-|-----------|----------|
-| **Модель** | Qwen3.5-0.8B-Base |
-| **Данные** | OpenR1-Math-220K (20K filtered, DeepSeek-R1 traces) |
-| **Бенчмарки** | GSM8K test (1.3K), MATH-500 |
-| **Фреймворки** | TRL, PEFT, vLLM, math-verify |
+- Author-aligned PRIME semantics: `K=4`, accuracy filter `[0.2, 0.8]`, refill до полного batch, pre-update PRM reward (`update=after`), separate outcome/process RLOO, reverse cumulative returns, global process normalization, PRM `beta=0.05`, `grad_clip=10`, `weight_decay=0`.
+- Exact memory-bounded log-probabilities для actor, PRM и reference: `lm_head` вычисляется token chunks с activation checkpointing вместо materialization `[B,T,V]`.
+- Text-only Qwen3.5 loading без vision encoder и vLLM `language_model_only`.
+- Optional LoRA отдельно для actor и PRM; faithful profile оставляет full-parameter training.
+- DPO-Z baseline в ordinary GRPO и PRIME: `beta * logmeanexp(R / beta)`, leave-one-out, без последующего centering, которое уничтожило бы baseline.
+- Четыре независимых PRIME extensions: DPO-Z, gradual/reliability-gated process reward, gauge-complete prompt calibration, PRM-guided candidate selection.
 
-## План экспериментов
+## Профили
 
-### Этап 1: SFT Ablation
+| Config | Назначение |
+|---|---|
+| `configs/prime_faithful.yaml` | Literal effective public RLOO semantics, 3K, full tuning, `K=4`; resource-scaled batch |
+| `configs/prime_research_16k.yaml` | Declared-intent `rm_coef=5`, 16K, LoRA actor/PRM, bounded-memory log-probs |
+| `configs/grpo_dpo_z.yaml` | Ordinary GRPO with DPO-Z advantage |
+| `configs/prime_idea_*.yaml` | По одному overlay на каждую из четырёх идей |
 
-| # | Эксперимент | Гипотеза | Статус |
-|---|-------------|----------|--------|
-| 1 | Full FT vs LoRA vs DoRA vs PiSSA | PEFT неявно ограничивает KL к исходной модели за счёт низкого ранга. Full FT обновляет все веса → ниже loss, но больший дрифт от π₀ | 🔄 Full FT и LoRA запущены |
-| 2 | Curriculum (random vs easy→hard) | Упорядочивание по сложности ≈ lr warm-up: начинаем с low-variance градиентов | ⏳ |
-| 3 | Prompt masking vs loss на промпте | Loss на промпте может улучшить связь "условие → решение", но разбавит сигнал | ⏳ |
+Idea overlays наследуют `prime_research_16k.yaml`; их наличие не означает, что ablations уже запускались. Public launch задаёт `rm_coef=5`, но literal RLOO path не применяет его к decomposed `rm_scores`; поэтому faithful и declared-intent profiles разведены явно.
 
-### Этап 2: GRPO Ablation
+## Memory contract
 
-| # | Эксперимент | Суть |
-|---|-------------|------|
-| 4 | Vanilla GRPO | Baseline: REINFORCE + group baseline + IS + clipping + KL |
-| 5 | Dr. GRPO | Убираем bias: Â = r - r̄ (без деления на σ) |
-| 6 | DAPO | 4 трюка: asymmetric clip, dynamic sampling, token-level norm, overlong penalty |
-| 7 | DPO-inspired baseline | Объединение аналитического результата DPO с итеративным подходом GRPO |
+У Qwen3.5 vocabulary size `248,320`. Один BF16 tensor logits для `T=16,384`, `B=1` занимает примерно 8.14 GB; вместе с FP32 normalization intermediates peak ещё выше. `memory.logprob_chunk_tokens=256` ограничивает raw vocab tensor примерно 127 MB на chunk (фактический peak projection + FP32 normalization — менее 0.4 GB).
 
-### Этап 3: Полный пайплайн
+`vllm_gpu_memory_utilization`, sleep mode, gradient checkpointing, sequential
+PRM/reference placement и LoRA снижают память. Vanilla GRPO и DPO-Z используют
+exact policy loss с token chunks по 256 позиций; Liger отключён, потому что при
+microbatch 1 он не режет 16K sequence по токенам. Реальные 16K GRPO runs
+работают примерно в 30–40 GiB собственного GPU footprint; конкретный reserve
+зависит от vLLM KV-cache profile и совместного использования карты.
 
+LoRA здесь нормальна как memory/speed ablation: при `r=16` у PRM около 10.8M trainable parameters (1.42%). Но faithful comparison должен включать full tuning, потому что LoRA меняет optimization hypothesis.
+
+## Environment
+
+Зависимости pinned в `pyproject.toml` и `uv.lock`:
+
+```bash
+uv sync --frozen
+uv run pytest -q
 ```
-SFT (лучший метод) → GRPO (лучший вариант) → Rejection Sampling + SFT → Final GRPO
+
+На H200 выбран существующий environment `~/opt_project/venv`. В нём `torch
+2.10.0`, `transformers 5.8.1`, `trl 1.2.0`, `peft 0.19.1`, `liger-kernel
+0.7.0`, `vllm 0.19.1`, `flash-linear-attention 0.5.0`. TRL предупреждает, что
+заявленная совместимость заканчивается на vLLM 0.18.0; поэтому каждый run
+использует fail-closed post-reload sync canary. Real-GPU paired diagnostic
+подтвердил расхождение trajectories после разных actor updates.
+
+## Запуск
+
+Проверка без training:
+
+```bash
+~/opt_project/venv/bin/python -m pytest -q tests
 ```
 
-### Дополнительно (если позволит время)
+После окончания SFT сначала merge adapter:
 
-- PRIME — token-level credit assignment
-- Online/Offline DPO
-- KL-constraint distillation (SFT + KL к учителю)
+```bash
+~/opt_project/venv/bin/python -m scripts.merge_text_lora \
+  --base Qwen/Qwen3.5-0.8B-Base \
+  --adapter outputs/sft_lora_r64_16k_two_epochs \
+  --output outputs/sft_lora_r64_16k_two_epochs_merged
+```
+
+После проверки свободной GPU и отдельного подтверждения expensive run доступны
+двухшаговые smoke-варианты с обязательным явным GPU:
+
+```bash
+scripts/run_rl_smoke.sh vanilla <gpu-id>
+scripts/run_rl_smoke.sh dpo_z <gpu-id>
+scripts/run_rl_smoke.sh prime <gpu-id>
+```
+
+Launcher ограничивает CPU threads, проверяет dataset/merged model и пишет
+`logs/<variant>_smoke.log`; full training автоматически не запускается.
 
 ## Структура
 
-```
-├── configs/              # YAML конфиги экспериментов
-│   ├── base.yaml         # Базовый конфиг (наследуется)
-│   ├── exp1_*.yaml       # Фаза данных
-│   ├── exp2_*.yaml       # Фаза методов (Full FT / LoRA / DoRA / PiSSA)
-│   └── exp3_*.yaml       # Curriculum
-├── src/
-│   ├── train_sft.py      # SFT training (TRL + PEFT)
-│   ├── evaluate.py       # Eval через vLLM (GSM8K, MATH-500)
-│   ├── data_utils.py     # Загрузка, фильтрация, curriculum sorting
-│   ├── generate_traces.py # Генерация traces учителем
-│   └── utils.py          # Конфиги, логирование, extract_boxed
-├── sft/                  # Скрипты запуска по фазам
-├── logs/                 # Логи текущих экспериментов
-├── analysis/             # Сравнение результатов
-└── docs/                 # Документация
+```text
+configs/                         faithful, 16K, GRPO and idea profiles
+src/train_prime.py               PRIME trainer
+src/train_grpo.py                GRPO/DAPO/Dr.GRPO + DPO-Z
+src/rl/prime_core.py             filtering, baselines, returns, schedules
+src/rl/chunked_logprobs.py       bounded-memory exact selected log-probs
+src/rl/prompt_calibration.py     gauge-complete PRM objective
+src/rl/guided_search.py          explicit off-policy candidate selection
+scripts/run_rl_smoke.sh          explicit-GPU two-step smoke launcher
+tests/                           synthetic parity and memory contracts
+obsidian/prime-rl-reproduction/  canonical project knowledge base
 ```
 
-## Quick Start
+Obsidian vault path `/home/maxim/Obsidian/Research/Projects/prime-rl-reproduction` оставлен symlink на repo-local notes.
 
-```bash
-# Установка
-pip install -r requirements.txt
+## Research integrity
 
-# Подготовка данных
-python src/data_utils.py --config configs/base.yaml --output data/openr1_20k
-
-# SFT Training (пример: LoRA)
-CUDA_VISIBLE_DEVICES=0 python src/train_sft.py \
-    --config configs/exp2_2_lora.yaml \
-    --data-dir data/openr1_20k \
-    --method lora
-
-# Eval
-python src/evaluate.py --model outputs/exp2_lora --output results/exp2_lora.json
-```
-
-## Метрики
-
-| Метрика | Описание |
-|---------|----------|
-| **Accuracy (pass@1)** | Sampling t=0.6, top_p=0.95 → extract `\boxed{}` → math_verify |
-| **Format compliance** | % ответов с корректным `<think>...</think> \boxed{...}` |
-| **Eval loss / token accuracy** | TensorBoard |
-| **Compute efficiency** | Время обучения, пиковый VRAM |
-
-## Текущий прогресс
-
-- [x] Инфраструктура: SFT pipeline, eval pipeline, data pipeline
-- [x] Конфиги для всех SFT экспериментов
-- [/] Exp 1: Full FT — ~50%, eval_loss=0.477, token_acc=84.6%
-- [/] Exp 2: LoRA r=64 — ~57%
-- [ ] DoRA, PiSSA
-- [ ] Curriculum, prompt masking
-- [ ] GRPO реализация
-- [ ] Полный пайплайн
-
-## Авторы
-
-MIPT, 2026 — Курс по методам оптимизации
+Старые checkpoints удалены намеренно и не восстанавливаются. Ни failed/unfinished run, ни unit tests не считаются experimental evidence. Каждый будущий результат должен сохранять commit, config, seed, dataset/model revision, environment и raw metrics.

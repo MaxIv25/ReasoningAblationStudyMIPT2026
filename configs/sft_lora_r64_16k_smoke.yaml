@@ -1,0 +1,7 @@
+inherits: sft_lora_r64_16k_two_epochs.yaml
+run_name: "sft_lora_r64_16k_smoke"
+
+training:
+  max_steps: 2
+  save_strategy: "no"
+  logging_steps: 1

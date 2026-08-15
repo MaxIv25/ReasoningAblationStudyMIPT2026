@@ -12,6 +12,7 @@ logs/*.log
 __pycache__/
 *.pyc
 *.pyo
+*.orig
 *.egg-info/
 .eggs/
 dist/

@@ -1,0 +1,8 @@
+inherits: "grpo_vanilla_with_val.yaml"
+run_name: "grpo_vanilla_constant_with_unseen_val"
+
+# Scheduler ablation against grpo_vanilla_with_val.yaml.
+# Keep every other training, rollout, validation, and LoRA setting identical.
+training:
+  lr_scheduler_type: "constant"
+  warmup_ratio: 0.0

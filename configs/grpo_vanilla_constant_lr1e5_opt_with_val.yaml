@@ -1,0 +1,9 @@
+inherits: "grpo_vanilla_constant_with_val.yaml"
+run_name: "grpo_vanilla_constant_lr1e5_opt"
+
+# Next learning-rate point in the constant-scheduler sweep. The shorter save
+# cadence is operational only and protects a long shared-server run.
+training:
+  learning_rate: 1.0e-5
+  save_steps: 20
+  save_total_limit: 2

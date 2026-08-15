@@ -1,0 +1,84 @@
+profile: "research_16k"
+run_name: "prime_research_16k_qwen35_08b_lora"
+
+model:
+  name: "outputs/sft_lora_r64_16k_two_epochs_merged"
+  torch_dtype: "bfloat16"
+  language_model_only: true
+  attn_implementation: "flash_attention_2"
+
+grpo:
+  loss_type: "grpo"
+  scale_rewards: "none"
+  beta: 0.0
+  num_generations: 8
+  max_prompt_length: 1024
+  max_completion_length: 16384
+  mask_truncated_completions: true
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 0
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.25
+
+training:
+  # Match the vanilla GRPO actor optimizer; PRM keeps its own LR below.
+  learning_rate: 1.5e-6
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  num_iterations: 1
+  num_train_epochs: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 8
+  dataloader_num_workers: 0
+  seed: 42
+  # Keep early actor+PRM recovery points: filtering cost is front-loaded.
+  save_steps: 5
+  save_total_limit: 2
+  logging_steps: 5
+
+prime:
+  beta: 0.05
+  rm_coef: 5.0
+  prm_lr: 1.0e-5
+  prm_weight_decay: 0.0
+  prm_grad_clip: 10.0
+  prm_update_epochs: 1
+  prm_ref_batch_size: 8
+  prm_grad_batch_size: 4
+  prm_update_timing: "after"
+  advantage_baseline: "rloo"
+  gamma: 1.0
+  filter_accuracy: true
+  # With G=8, [0.1, 0.9] keeps 1--7 successes: the same discrete
+  # non-unanimous criterion as the public G=4 run with [0.2, 0.8].
+  filter_lower: 0.1
+  filter_upper: 0.9
+  filter_refill: true
+  process_reward_schedule: "constant"
+  zx_calibrated_prm:
+    enabled: false
+    ranking_weight: 0.25
+    intercept_l2: 1.0e-4
+  guided_search:
+    enabled: false
+    mode: "stochastic_ht"
+    candidates: 16
+    keep: 8
+
+memory:
+  logprob_chunk_tokens: 512
+  checkpoint_logprob_chunks: true
+  cpu_offload_policy: false
+  cpu_offload_aux: false
+
+peft:
+  enabled: true
+  actor: true
+  prm: true
+  r: 16
+  alpha: 32
+  dropout: 0.0
+  target_modules: "all-linear"
+  bias: "none"

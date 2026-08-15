@@ -1,7 +1,25 @@
 import argparse
+import fnmatch
 import os
 import shutil
 from huggingface_hub import snapshot_download
+
+
+CHECKPOINT_METADATA_PATTERNS = (
+    "*.py",
+    "config.json",
+    "preprocessor_config.json",
+    "video_preprocessor_config.json",
+    "generation_config.json",
+)
+
+
+def should_copy_checkpoint_metadata(filename: str) -> bool:
+    return any(
+        fnmatch.fnmatch(filename, pattern)
+        for pattern in CHECKPOINT_METADATA_PATTERNS
+    )
+
 
 def fix_checkpoint(base_model: str, checkpoint_dir: str):
     print(f"Fixing checkpoint {checkpoint_dir} using base model {base_model}...")
@@ -9,13 +27,15 @@ def fix_checkpoint(base_model: str, checkpoint_dir: str):
     try:
         # Get the original files from HF cache
         base_path = snapshot_download(
-            base_model, 
-            allow_patterns=["*.py", "config.json", "preprocessor_config.json", "generation_config.json"]
+            base_model,
+            allow_patterns=list(CHECKPOINT_METADATA_PATTERNS),
         )
         
         # Copy them over to the output directory
         copied = []
         for filename in os.listdir(base_path):
+            if not should_copy_checkpoint_metadata(filename):
+                continue
             src_path = os.path.join(base_path, filename)
             if os.path.isfile(src_path):
                 dst_path = os.path.join(checkpoint_dir, filename)
@@ -27,6 +47,7 @@ def fix_checkpoint(base_model: str, checkpoint_dir: str):
         
     except Exception as e:
         print(f"Error: {e}")
+        raise
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -20,9 +20,11 @@ import torch.nn.functional as F
 from datasets import load_from_disk
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTTrainer, SFTConfig
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.rl.model_utils import load_text_causal_lm
+from src.sft_chunked_loss import chunked_causal_lm_loss, liger_fused_causal_lm_loss
 from src.utils import load_config, setup_logging, get_gpu_memory_info
 
 logger = setup_logging("train_sft")
@@ -42,6 +44,90 @@ class CurriculumSFTTrainer(SFTTrainer):
             return None
         from torch.utils.data import SequentialSampler
         return SequentialSampler(ds)
+
+
+def _unwrap_causal_lm(model: torch.nn.Module) -> torch.nn.Module:
+    """Return the causal LM beneath optional distributed and PEFT wrappers."""
+    while hasattr(model, "module"):
+        model = model.module
+    if hasattr(model, "get_base_model"):
+        model = model.get_base_model()
+    return model
+
+
+class ChunkedCausalLMLossMixin:
+    """SFT loss that never retains a full ``[tokens, vocab]`` tensor."""
+
+    logit_chunk_tokens: int = 1024
+    checkpoint_logit_chunks: bool = True
+    loss_backend: str = "liger_fused"
+
+    def compute_loss(
+        self,
+        model,
+        inputs,
+        return_outputs=False,
+        num_items_in_batch=None,
+        **kwargs,
+    ):
+        labels = inputs["labels"]
+        causal_lm = _unwrap_causal_lm(model)
+        decoder = causal_lm.get_decoder()
+        lm_head = causal_lm.get_output_embeddings()
+        captured: dict[str, torch.Tensor] = {}
+
+        def capture_hidden(_module, _args, output):
+            captured["hidden_states"] = (
+                output.last_hidden_state if hasattr(output, "last_hidden_state") else output[0]
+            )
+
+        handle = decoder.register_forward_hook(capture_hidden)
+        try:
+            model_inputs = {key: value for key, value in inputs.items() if key != "labels"}
+            outputs = model(
+                **model_inputs,
+                use_cache=False,
+                logits_to_keep=1,
+                return_dict=True,
+            )
+        finally:
+            handle.remove()
+
+        hidden_states = captured.get("hidden_states")
+        if hidden_states is None:
+            raise RuntimeError("Failed to capture final decoder hidden states")
+        loss_kwargs = {
+            "bias": getattr(lm_head, "bias", None),
+            "num_items_in_batch": num_items_in_batch,
+        }
+        if self.loss_backend == "liger_fused":
+            loss = liger_fused_causal_lm_loss(
+                hidden_states,
+                lm_head.weight,
+                labels,
+                **loss_kwargs,
+            )
+        elif self.loss_backend == "chunked_checkpoint":
+            loss = chunked_causal_lm_loss(
+                hidden_states,
+                lm_head.weight,
+                labels,
+                chunk_tokens=self.logit_chunk_tokens,
+                checkpoint_chunks=self.checkpoint_logit_chunks,
+                **loss_kwargs,
+            )
+        else:
+            raise RuntimeError(f"Invalid bounded-memory loss backend: {self.loss_backend}")
+        outputs.loss = loss
+        return (loss, outputs) if return_outputs else loss
+
+
+class ChunkedLossSFTTrainer(ChunkedCausalLMLossMixin, SFTTrainer):
+    pass
+
+
+class CurriculumChunkedLossSFTTrainer(ChunkedCausalLMLossMixin, CurriculumSFTTrainer):
+    pass
 
 
 class PromptLossMixin:
@@ -155,6 +241,11 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
 
     model_name = model_cfg.get("name", "Qwen/Qwen3.5-4B-Base")
     max_seq_len = model_cfg.get("max_seq_len", 4096)
+    attn_implementation = model_cfg.get("attn_implementation", "sdpa")
+    language_model_only = model_cfg.get("language_model_only", True)
+    loss_backend = train_cfg.get("loss_backend", "liger_fused")
+    if loss_backend not in {"liger_fused", "chunked_checkpoint", "standard"}:
+        raise ValueError(f"Unsupported SFT loss_backend: {loss_backend}")
 
     # Determine LR and epochs based on method
     if method == "full_ft":
@@ -175,6 +266,17 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
     logger.info(f"Output: {output_dir}")
     logger.info(f"GPU info: {get_gpu_memory_info()}")
 
+    memory_limit_gib = train_cfg.get("max_process_memory_gib")
+    if torch.cuda.is_available() and memory_limit_gib is not None:
+        total_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        fraction = min(float(memory_limit_gib) / total_gib, 1.0)
+        torch.cuda.set_per_process_memory_fraction(fraction, device=0)
+        logger.info(
+            "CUDA allocator cap: %.1f GiB (%.3f of device memory)",
+            float(memory_limit_gib),
+            fraction,
+        )
+
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -183,14 +285,7 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
     # Load model
     # NOTE: 0.8B model fits entirely on one GPU, no need for device_map.
     # device_map="auto" was causing excessive VRAM usage for PEFT (~130GB).
-    model_kwargs = {
-        "torch_dtype": getattr(torch, model_cfg.get("torch_dtype", "bfloat16")),
-        "trust_remote_code": True,
-        # IMPORTANT: packing=True requires flash_attention_2 for proper document masks.
-        # With SDPA, TRL creates a full 4D mask (16K×16K) which forces O(n²) fallback.
-        # Use "sdpa" (fast) when packing=False, "flash_attention_2" when packing=True.
-        "attn_implementation": "sdpa",
-    }
+    dtype = getattr(torch, model_cfg.get("torch_dtype", "bfloat16"))
     
     # TF32 for matmul on Hopper — set via new API (legacy API conflicts with torch.compile)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -205,7 +300,21 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
     logger.info("SDPA config: flash=True, mem_efficient=True, math=DISABLED")
 
     logger.info("Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    if language_model_only:
+        model = load_text_causal_lm(
+            model_name,
+            dtype=dtype,
+            device="cpu",
+            attn_implementation=attn_implementation,
+            logger=logger,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            attn_implementation=attn_implementation,
+        )
 
     # Memory profiling
     if torch.cuda.is_available():
@@ -231,9 +340,15 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         train_dataset = splits["train"]
         eval_dataset = splits["eval"]
 
+    from src.data_utils import ensure_prompt_completion_format
+
+    train_dataset = ensure_prompt_completion_format(train_dataset, tokenizer)
+    eval_dataset = ensure_prompt_completion_format(eval_dataset, tokenizer)
+
     sft_args = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=epochs,
+        max_steps=train_cfg.get("max_steps", -1),
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 4),
         # IMPORTANT: eval at 16K + 248K vocab without liger → 60GB logits tensor at batch=4.
         # Liger kernel only fuses CE during training, not eval!
@@ -247,16 +362,23 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         weight_decay=train_cfg.get("weight_decay", 0.01),
         bf16=train_cfg.get("bf16", True),
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
+        gradient_checkpointing_kwargs=train_cfg.get(
+            "gradient_checkpointing_kwargs", {"use_reentrant": False}
+        ),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         max_length=max_seq_len,  # TRL 1.x: was max_seq_length
+        completion_only_loss=train_cfg.get("completion_only_loss", True),
         # CRITICAL: packing=True + SDPA creates 16K×16K attention mask → O(n²) fallback, 200+ sec/step!
         # packing=False uses dynamic padding + SDPA flash path → 10-20× faster per step.
         # Re-enable packing only with attn_implementation="flash_attention_2".
         packing=train_cfg.get("packing", False),
+        train_sampling_strategy=(
+            "group_by_length" if train_cfg.get("group_by_length", False) else "random"
+        ),
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "steps"),
         save_steps=train_cfg.get("save_steps", 250),
-        eval_strategy="steps",
+        eval_strategy=train_cfg.get("eval_strategy", "steps"),
         eval_steps=train_cfg.get("eval_steps", 500),
         save_total_limit=train_cfg.get("save_total_limit", 2),
         save_only_model=train_cfg.get("save_only_model", False),
@@ -265,19 +387,31 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         # Performance
         optim=train_cfg.get("optim", "adamw_torch_fused"),
         # NOTE: torch_compile removed — compilation takes 20+ min with DDP+grad_checkpointing+16K
-        dataloader_num_workers=4,
+        dataloader_num_workers=train_cfg.get("dataloader_num_workers", 0),
         dataloader_pin_memory=True,
-        use_liger_kernel=True,  # Fused CE loss: avoids 30GB logits tensor (248K vocab × 16K seq)
+        # Qwen3.5 is absent from the Liger 0.7 model dispatcher. The
+        # ``liger_fused`` backend calls its generic loss primitive directly.
+        use_liger_kernel=False,
         # Logging: tensorboard (logs saved to output_dir/runs/)
         report_to="tensorboard",
         run_name=config.get("run_name", f"sft_{method}"),
+        skip_memory_metrics=False,
     )
 
     use_curriculum = train_cfg.get("curriculum_learning", False)
     prompt_loss_weight = train_cfg.get("prompt_loss_weight", 0.0)
+    bounded_memory_loss = loss_backend in {"liger_fused", "chunked_checkpoint"}
+    if bounded_memory_loss and prompt_loss_weight > 0:
+        raise ValueError("bounded-memory SFT loss does not support prompt_loss_weight")
 
     # Select trainer class based on enabled features
-    if use_curriculum and prompt_loss_weight > 0:
+    if bounded_memory_loss and use_curriculum:
+        trainer_cls = CurriculumChunkedLossSFTTrainer
+        logger.info("Using exact chunked causal LM loss with curriculum sampling")
+    elif bounded_memory_loss:
+        trainer_cls = ChunkedLossSFTTrainer
+        logger.info("Using exact chunked causal LM loss")
+    elif use_curriculum and prompt_loss_weight > 0:
         trainer_cls = CurriculumPromptLossSFTTrainer
         logger.info(f"Using CurriculumPromptLossSFTTrainer (sequential + prompt_loss_weight={prompt_loss_weight})")
     elif use_curriculum:
@@ -297,6 +431,19 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
         processing_class=tokenizer,  # TRL 1.x: was tokenizer
         peft_config=peft_config,
     )
+
+    if bounded_memory_loss:
+        trainer.loss_backend = loss_backend
+        trainer.logit_chunk_tokens = int(train_cfg.get("logit_chunk_tokens", 1024))
+        trainer.checkpoint_logit_chunks = bool(
+            train_cfg.get("checkpoint_logit_chunks", True)
+        )
+        logger.info(
+            "Bounded-memory CE: backend=%s chunk_tokens=%s checkpoint_chunks=%s",
+            trainer.loss_backend,
+            trainer.logit_chunk_tokens,
+            trainer.checkpoint_logit_chunks,
+        )
 
     # Set prompt_loss_weight on trainer if applicable
     if prompt_loss_weight > 0:
@@ -331,6 +478,10 @@ def train(config: dict, data_dir: str = None, output_dir: str = None, resume: bo
 
     # Save training metrics
     metrics = train_result.metrics
+    if torch.cuda.is_available():
+        metrics["peak_gpu_memory_gib"] = round(
+            torch.cuda.max_memory_allocated() / (1024**3), 3
+        )
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
 

@@ -1,0 +1,5 @@
+inherits: "grpo_vanilla_sft_lora_smoke.yaml"
+run_name: "grpo_vanilla_epoch1_smoke"
+
+model:
+  name: "outputs/sft_lora_r64_16k_epoch1_merged"

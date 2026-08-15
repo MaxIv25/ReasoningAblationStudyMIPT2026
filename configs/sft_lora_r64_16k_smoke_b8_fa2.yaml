@@ -1,0 +1,5 @@
+inherits: sft_lora_r64_16k_smoke_b8.yaml
+run_name: "sft_lora_r64_16k_smoke_b8_fa2"
+
+model:
+  attn_implementation: "flash_attention_2"

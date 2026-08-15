@@ -1,0 +1,76 @@
+profile: "faithful_prime"
+execution_target: "literal_public_rloo"
+run_name: "prime_faithful_qwen35_08b"
+
+model:
+  name: "Qwen/Qwen3.5-0.8B"
+  torch_dtype: "bfloat16"
+  language_model_only: true
+
+published_reference:
+  prompt_batch_size: 256
+  max_prompt_length: 1024
+  max_response_length: 3072
+  rollouts_per_prompt: 4
+  declared_rm_coef: 5.0
+  effective_rloo_rm_coef: 1.0
+
+grpo:
+  loss_type: "grpo"
+  scale_rewards: "none"
+  beta: 0.0
+  num_generations: 4
+  max_prompt_length: 1024
+  max_completion_length: 3072
+  mask_truncated_completions: false
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 0
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.12
+
+training:
+  learning_rate: 5.0e-7
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  num_iterations: 1
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 64
+  dataloader_num_workers: 0
+  seed: 42
+
+prime:
+  beta: 0.05
+  # Public RLOO consumes raw rm_scores, not the rm_coef-scaled composite `all`.
+  rm_coef: 1.0
+  prm_lr: 1.0e-6
+  prm_weight_decay: 0.0
+  prm_grad_clip: 10.0
+  prm_update_epochs: 1
+  prm_update_timing: "after"
+  advantage_baseline: "rloo"
+  prime_norm: "batch_norm"
+  gamma: 1.0
+  filter_accuracy: true
+  filter_lower: 0.2
+  filter_upper: 0.8
+  filter_refill: true
+  filter_truncated_groups: false
+  process_reward_schedule: "constant"
+  zx_calibrated_prm:
+    enabled: false
+  guided_search:
+    enabled: false
+
+memory:
+  logprob_chunk_tokens: 256
+  checkpoint_logprob_chunks: true
+  cpu_offload_policy: true
+  cpu_offload_aux: true
+
+peft:
+  enabled: false
+  actor: false
+  prm: false

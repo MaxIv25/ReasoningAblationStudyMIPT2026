@@ -1,0 +1,10 @@
+inherits: "prime_research_16k.yaml"
+run_name: "prime_research_16k_with_unseen_val"
+
+validation:
+  data_dir: "data/grpo_validation_unseen_100_v1"
+  num_samples: 100
+  eval_steps: 20
+  num_generations: 1
+  eval_on_start: true
+  per_device_eval_batch_size: 20

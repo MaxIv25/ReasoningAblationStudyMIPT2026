@@ -1,0 +1,12 @@
+inherits: "grpo_dpo_z_gpu7.yaml"
+run_name: "grpo_dpo_z_gpu7_smoke"
+
+grpo:
+  num_samples: 16
+  generation_batch_size: 8
+
+training:
+  max_steps: 2
+  gradient_accumulation_steps: 1
+  save_steps: 1000
+  logging_steps: 1

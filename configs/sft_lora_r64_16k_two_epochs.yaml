@@ -1,0 +1,38 @@
+# Format/reasoning bootstrap with an epoch-1 recovery point and a 45 GiB cap.
+method: lora
+run_name: "sft_lora_r64_16k_two_epochs"
+
+model:
+  name: "Qwen/Qwen3.5-0.8B-Base"
+  language_model_only: true
+  max_seq_len: 16384
+  torch_dtype: "bfloat16"
+  attn_implementation: "flash_attention_2"
+
+training:
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 1
+  max_process_memory_gib: 45
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+  packing: false  # Qwen3.5 linear-attention state must not cross document boundaries.
+  group_by_length: true
+  completion_only_loss: true
+  loss_backend: "liger_fused"
+  # Used by the checkpointed fallback; sweep candidates: 512, 1024, 2048.
+  logit_chunk_tokens: 1024
+  checkpoint_logit_chunks: true
+  optim: "adamw_torch_fused"
+  dataloader_num_workers: 0
+  logging_steps: 20
+  save_strategy: "epoch"
+  save_total_limit: 2
+  eval_strategy: "no"  # Probe correctness/format separately after training.
+  lora:
+    learning_rate: 2.0e-4
+    num_train_epochs: 2
+    r: 64
+    lora_alpha: 128
+    lora_dropout: 0.0
+    target_modules: "all-linear"

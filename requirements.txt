@@ -7,6 +7,7 @@ datasets
 accelerate
 math-verify
 tilelang                 # GPU kernel compiler — dependency for FlashQLA (Qwen3.5 GDN layers)
+ninja>=1.13              # Required executable for FlashInfer JIT kernel builds
 flash-linear-attention   # FlashQLA kernels for Qwen3.5 hybrid GDN/linear attention layers
 tensorboard
 hf_transfer

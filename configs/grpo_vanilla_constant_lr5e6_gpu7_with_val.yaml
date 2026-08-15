@@ -1,0 +1,11 @@
+inherits: "grpo_vanilla_constant_lr5e6_with_val.yaml"
+run_name: "grpo_vanilla_constant_lr5e6_gpu7_recoverable"
+
+# Resource-only overlay for the shared H200 GPU 7. DPO-Z completed with this
+# vLLM reservation while a foreign process occupied the rest of the card.
+grpo:
+  vllm_gpu_memory_utilization: 0.20
+
+training:
+  save_steps: 20
+  save_total_limit: 2

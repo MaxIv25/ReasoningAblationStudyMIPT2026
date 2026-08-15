@@ -1,0 +1,29 @@
+inherits: "prime_research_16k.yaml"
+run_name: "prime_research_refill_smoke"
+
+# Two real actor/PRM optimizer steps. This profile intentionally keeps the
+# accuracy filter enabled so it enters the repaired official-style refill path.
+grpo:
+  num_samples: 64
+  generation_batch_size: 8
+  max_completion_length: 2048
+  max_model_len: 3072
+  vllm_gpu_memory_utilization: 0.18
+  verify_vllm_weight_sync: true
+  require_vllm_weight_change_after_step: true
+
+training:
+  max_steps: 2
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  lr_scheduler_type: "constant"
+  warmup_ratio: 0.0
+  save_steps: 1
+  save_total_limit: 2
+  logging_steps: 1
+
+prime:
+  filter_accuracy: true
+  filter_lower: 0.1
+  filter_upper: 0.9
+  filter_refill: true

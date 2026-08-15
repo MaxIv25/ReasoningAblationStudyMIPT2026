@@ -1,0 +1,20 @@
+inherits: "prime_research_16k.yaml"
+run_name: "prime_research_16k_smoke"
+
+grpo:
+  num_samples: 16
+  generation_batch_size: 8
+
+training:
+  max_steps: 2
+  gradient_accumulation_steps: 8
+  lr_scheduler_type: "constant"
+  warmup_ratio: 0.0
+  save_steps: 1000
+  logging_steps: 1
+
+prime:
+  # Functional smoke must always produce an optimizer step; the full profile
+  # restores the author-aligned solvability filter and refill.
+  filter_accuracy: false
+  filter_refill: false

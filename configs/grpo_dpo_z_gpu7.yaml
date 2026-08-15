@@ -1,0 +1,7 @@
+inherits: "grpo_dpo_z.yaml"
+run_name: "grpo_dpo_z_full_gpu7"
+
+# Keep the training contract identical to vanilla GRPO and reduce only the
+# colocated vLLM reservation for the smaller free-memory margin on GPU 7.
+grpo:
+  vllm_gpu_memory_utilization: 0.20

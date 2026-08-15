@@ -1,0 +1,11 @@
+inherits: "grpo_vanilla_sft_lora.yaml"
+run_name: "grpo_dpo_z_from_sft_lora"
+
+grpo:
+  loss_type: "grpo"
+  advantage_baseline: "dpo_z"
+  dpo_z_beta: 0.1
+  dpo_z_leave_one_out: true
+  scale_rewards: "none"
+  memory_bounded_policy_loss: true
+  use_liger_kernel: false

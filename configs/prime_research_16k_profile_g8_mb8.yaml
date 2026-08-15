@@ -1,0 +1,13 @@
+inherits: "prime_research_16k_smoke.yaml"
+run_name: "prime_research_16k_profile_g8_mb8"
+
+grpo:
+  num_samples: 64
+  generation_batch_size: 64
+
+training:
+  max_steps: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 8
+  save_steps: 1000
+  logging_steps: 1

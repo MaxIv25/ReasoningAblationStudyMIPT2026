@@ -1,0 +1,28 @@
+run_name: "grpo_vanilla_from_sft_lora_r64"
+
+model:
+  name: "outputs/sft_lora_r64_16k_two_epochs_merged"
+  language_model_only: true
+  torch_dtype: "bfloat16"
+  attn_implementation: "flash_attention_2"
+
+grpo:
+  loss_type: "grpo"
+  advantage_baseline: "group_mean"
+  num_samples: 1500
+  num_generations: 8
+  max_prompt_length: 1024
+  max_completion_length: 16384
+  max_model_len: 17408
+  use_liger_kernel: false
+  memory_bounded_policy_loss: true
+  logprob_chunk_tokens: 256
+
+peft:
+  enabled: true
+  actor: true
+  r: 16
+  alpha: 32
+  dropout: 0.0
+  target_modules: "all-linear"
+  bias: "none"

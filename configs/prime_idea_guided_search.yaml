@@ -1,0 +1,11 @@
+inherits: "prime_research_16k.yaml"
+run_name: "prime_idea_guided_search"
+grpo:
+  num_generations: 16
+prime:
+  guided_search:
+    enabled: true
+    mode: "stochastic_ht"
+    keep: 8
+    temperature: 1.0
+    allow_biased_update: false

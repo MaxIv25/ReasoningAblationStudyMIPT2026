@@ -1,0 +1,25 @@
+inherits: "grpo_dpo_z_gpu7_with_val.yaml"
+run_name: "grpo_dpo_z_with_unseen_val_smoke"
+
+grpo:
+  num_samples: 32
+  generation_batch_size: 8
+  max_completion_length: 1024
+  max_model_len: 2048
+  vllm_gpu_memory_utilization: 0.18
+
+training:
+  max_steps: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  lr_scheduler_type: "constant"
+  warmup_ratio: 0.0
+  save_steps: 1
+  logging_steps: 1
+
+validation:
+  num_samples: 8
+  eval_steps: 1
+  num_generations: 1
+  eval_on_start: true
+  per_device_eval_batch_size: 8

@@ -1,1015 +1,1028 @@
-"""
-PRIME (Process Reinforcement through Implicit Rewards) training script.
+"""Memory-bounded, author-aligned PRIME training on a post-trained causal LM.
 
-Subclasses TRL GRPOTrainer to add:
-- Implicit PRM: token-level rewards via log-ratio of PRM/reference models
-- Dense advantage: A_t = Return_process(t) + Return_outcome
-- Online PRM update: BCE on outcome labels after each generation batch
-- Configurable baselines: rloo, group_mean, truncated_mean, dpo_z
-
-Reference: Yuan et al., 2025 — arxiv.org/abs/2502.01456
+The baseline follows the public PRIME launch and implementation: solvability
+filtering, pre-update implicit rewards (``update=after``), separate RLOO for
+verifier/process sources, global reverse-return normalization, and final masked
+whitening. Research extensions are opt-in and logged separately.
 """
 
 import argparse
+import gc
+import glob
+import json
 import os
 import sys
 from pathlib import Path
 
-# ── FLA/TileLang workaround for H200 (Hopper) ────────────────
-
-os.environ["FLA_TILELANG"] = "0"
+# Avoid a shared, permission-sensitive /tmp/tvm-debug-mode-tempdirs root.
+# TileLang's persistent kernel cache is independent of these compiler temp files.
+os.environ.setdefault("TILELANG_CLEANUP_TEMP_FILES", "1")
 
 import torch
 import torch.nn.functional as F
 from datasets import load_from_disk
-
-import fla.utils
-fla.utils.IS_NVIDIA_HOPPER = False
-import fla.ops.common.chunk_o as _chunk_o
-_chunk_o.IS_NVIDIA_HOPPER = False
-
-from trl import GRPOTrainer, GRPOConfig
-from transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer, set_seed
+from trl import GRPOConfig, GRPOTrainer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.utils import load_config, setup_logging, get_gpu_memory_info, extract_boxed_answer, verify_answer
+from src.rl.chunked_logprobs import entropy_from_hidden, selected_logprobs_from_hidden
+from src.rl.dataset_contract import (
+    validate_preformatted_math_rl_dataset,
+    validate_prompt_token_lengths,
+)
+from src.rl.guided_search import select_prm_guided_candidates
+from src.rl.model_utils import load_text_causal_lm, patch_vllm_language_model_only
+from src.rl.peft_utils import build_lora_config
+from src.rl.vllm_sync_canary import install_vllm_sync_canary
+from src.rl.prime_core import (
+    compute_prime_advantages,
+    implicit_process_rewards,
+    prime_prm_bce_loss,
+    non_truncated_group_mask,
+    process_reward_weight,
+    solvable_group_mask,
+)
+from src.rl.prompt_calibration import PromptCalibrationHead
+from src.utils import (
+    extract_boxed_answer,
+    get_gpu_memory_info,
+    load_config,
+    setup_logging,
+    verify_answer,
+)
 
 logger = setup_logging("train_prime")
 
 
-# ──────────────────────────────────────────────────────────────
-# Baseline functions for advantage computation
-# ──────────────────────────────────────────────────────────────
+def accuracy_reward(completions, solution, log_metric=None, **kwargs):
+    rewards = []
+    for completion, target in zip(completions, solution):
+        content = (
+            completion[0]["content"] if isinstance(completion, list) else completion
+        )
+        prediction = extract_boxed_answer(content)
+        rewards.append(
+            float(prediction is not None and verify_answer(prediction, target))
+        )
+    if log_metric and rewards:
+        log_metric("accuracy", sum(rewards) / len(rewards))
+    return rewards
 
-def compute_baseline_rloo(rewards: torch.Tensor, num_generations: int) -> torch.Tensor:
-    """Leave-One-Out baseline: b_i = mean(r_{j!=i}) for each sample i in group."""
-    # rewards: (B*G,) -> reshape to (B, G)
-    grouped = rewards.view(-1, num_generations)
-    B, G = grouped.shape
-    # LOO mean: (sum - r_i) / (G - 1)
-    group_sum = grouped.sum(dim=1, keepdim=True)  # (B, 1)
-    loo_baseline = (group_sum - grouped) / max(G - 1, 1)  # (B, G)
-    return loo_baseline.reshape(-1)  # (B*G,)
-
-
-def compute_baseline_group_mean(rewards: torch.Tensor, num_generations: int) -> torch.Tensor:
-    """Group mean baseline: b = mean(r_all) per group."""
-    grouped = rewards.view(-1, num_generations)
-    mean = grouped.mean(dim=1, keepdim=True).expand_as(grouped)
-    return mean.reshape(-1)
-
-
-def compute_baseline_truncated_mean(rewards: torch.Tensor, num_generations: int,
-                                     trim_frac: float = 0.125) -> torch.Tensor:
-    """Truncated mean: remove top/bottom trim_frac of group, take mean of rest."""
-    grouped = rewards.view(-1, num_generations)
-    B, G = grouped.shape
-    k = max(1, int(G * trim_frac))
-    sorted_rewards, _ = grouped.sort(dim=1)
-    trimmed = sorted_rewards[:, k:G-k]
-    mean = trimmed.mean(dim=1, keepdim=True).expand_as(grouped)
-    return mean.reshape(-1)
-
-
-def compute_baseline_dpo_z(rewards: torch.Tensor, num_generations: int,
-                            beta: float = 0.1) -> torch.Tensor:
-    """DPO partition function estimate: b = log(mean(exp(β*r))) / β."""
-    grouped = rewards.view(-1, num_generations)
-    log_z = torch.logsumexp(beta * grouped, dim=1) - torch.log(
-        torch.tensor(float(grouped.shape[1]), device=rewards.device)
-    )
-    baseline = (log_z / beta).unsqueeze(1).expand_as(grouped)
-    return baseline.reshape(-1)
-
-
-BASELINE_FUNCS = {
-    "rloo": compute_baseline_rloo,
-    "group_mean": compute_baseline_group_mean,
-    "truncated_mean": compute_baseline_truncated_mean,
-    "dpo_z": compute_baseline_dpo_z,
-}
-
-
-# ──────────────────────────────────────────────────────────────
-# PrimeGRPOTrainer
-# ──────────────────────────────────────────────────────────────
 
 class PrimeGRPOTrainer(GRPOTrainer):
-    """
-    GRPOTrainer with PRIME dense advantage estimation.
+    """TRL trainer with author-aligned PRIME rewards and bounded logits memory."""
 
-    Overrides _generate_and_score_completions to:
-    1. Compute standard outcome rewards (inherited)
-    2. Forward PRM + ref to get token-level process rewards
-    3. Compute dense advantage: A_t = Return_process(t) + Return_outcome
-    4. Update PRM online with BCE loss on outcome labels
-    """
-
-    def __init__(self, prime_cfg: dict, **kwargs):
+    def __init__(
+        self,
+        *,
+        prime_cfg: dict,
+        memory_cfg: dict,
+        peft_cfg: dict,
+        model_id: str,
+        attn_implementation: str = "sdpa",
+        **kwargs,
+    ):
+        self.prime_cfg = prime_cfg
+        self.memory_cfg = memory_cfg
+        self.peft_cfg = peft_cfg
+        self.model_id = model_id
+        self.attn_implementation = attn_implementation
         super().__init__(**kwargs)
 
-        self.prime_beta = prime_cfg.get("beta", 0.1)
-        self.prime_prm_lr = prime_cfg.get("prm_lr", 1e-6)
-        self.prime_prm_update_epochs = prime_cfg.get("prm_update_epochs", 1)
-        self.prime_baseline_type = prime_cfg.get("advantage_baseline", "rloo")
-        self.prime_online_filter = prime_cfg.get("online_filter", True)
-        self.prime_gamma = prime_cfg.get("gamma", 1.0)
-        # PRM update micro-batch sizes (policy is offloaded → GPU mostly free)
-        self.prm_ref_batch_size = prime_cfg.get("prm_ref_batch_size", 4)
-        self.prm_grad_batch_size = prime_cfg.get("prm_grad_batch_size", 2)
+        self.prime_beta = float(prime_cfg.get("beta", 0.05))
+        self.prime_rm_coef = float(prime_cfg.get("rm_coef", 5.0))
+        self.prime_prm_lr = float(prime_cfg.get("prm_lr", 1e-6))
+        self.prime_prm_epochs = int(prime_cfg.get("prm_update_epochs", 1))
+        self.prime_prm_grad_clip = float(prime_cfg.get("prm_grad_clip", 10.0))
+        self.prime_baseline = prime_cfg.get("advantage_baseline", "rloo")
+        self.prime_gamma = float(prime_cfg.get("gamma", 1.0))
+        self.filter_accuracy = bool(prime_cfg.get("filter_accuracy", True))
+        self.filter_lower = float(prime_cfg.get("filter_lower", 0.2))
+        self.filter_upper = float(prime_cfg.get("filter_upper", 0.8))
+        self.filter_refill = bool(prime_cfg.get("filter_refill", True))
+        self.filter_truncated_groups = bool(
+            prime_cfg.get("filter_truncated_groups", False)
+        )
+        self.prm_update_timing = prime_cfg.get("prm_update_timing", "after")
+        if self.prm_update_timing != "after":
+            raise ValueError("The faithful profile requires prm_update_timing='after'")
 
-        # Hybrid Offloading Configs
-        self.cpu_offload_policy = prime_cfg.get("cpu_offload_policy", prime_cfg.get("cpu_offload", True))
-        self.cpu_offload_aux = prime_cfg.get("cpu_offload_aux", True)
+        self.logprob_chunk_tokens = int(memory_cfg.get("logprob_chunk_tokens", 256))
+        self.checkpoint_logprob_chunks = bool(
+            memory_cfg.get("checkpoint_logprob_chunks", True)
+        )
+        self.cpu_offload_policy = bool(memory_cfg.get("cpu_offload_policy", True))
+        self.cpu_offload_aux = bool(memory_cfg.get("cpu_offload_aux", True))
+        self.prm_ref_batch_size = int(prime_cfg.get("prm_ref_batch_size", 1))
+        self.prm_grad_batch_size = int(prime_cfg.get("prm_grad_batch_size", 1))
+        self._prime_step = 0
 
-        # Extension 6.5: Curriculum — ramp process weight α from 0→1
-        # 0 = disabled (α=1 always), >0 = linear warmup over N steps
-        self.curriculum_warmup_steps = prime_cfg.get("curriculum_warmup_steps", 0)
-        self._prime_step_counter = 0
+        self.process_schedule = prime_cfg.get("process_reward_schedule", "constant")
+        self.process_warmup_steps = int(prime_cfg.get("process_reward_warmup_steps", 0))
+        self.reliability_floor = float(prime_cfg.get("reliability_floor", 0.5))
+        self.reliability_full = float(prime_cfg.get("reliability_full", 0.7))
 
-        # Extension 6.6: Z(x)-calibrated PRM loss
-        # Adds MC estimate of log Z(x) to PRM score before BCE
-        self.zx_calibrated_prm = prime_cfg.get("zx_calibrated_prm", False)
+        calibration_cfg = prime_cfg.get("zx_calibrated_prm", {})
+        if isinstance(calibration_cfg, bool):
+            calibration_cfg = {"enabled": calibration_cfg}
+        self.calibration_cfg = calibration_cfg
+        self.use_prompt_calibration = bool(calibration_cfg.get("enabled", False))
 
-        if self.prime_baseline_type not in BASELINE_FUNCS:
-            raise ValueError(f"Unknown baseline: {self.prime_baseline_type}. "
-                           f"Choose from {list(BASELINE_FUNCS.keys())}")
+        guided_cfg = prime_cfg.get("guided_search", {})
+        self.guided_cfg = (
+            guided_cfg
+            if isinstance(guided_cfg, dict)
+            else {"enabled": bool(guided_cfg)}
+        )
+        self.use_guided_search = bool(self.guided_cfg.get("enabled", False))
 
-        self._gpu_device = self.accelerator.device
+        aux_device = "cpu" if self.cpu_offload_aux else self.accelerator.device
+        self.prm_model = load_text_causal_lm(
+            model_id,
+            device=aux_device,
+            attn_implementation=attn_implementation,
+            logger=logger,
+        )
+        prm_lora = build_lora_config(peft_cfg, enabled_key="prm")
+        if prm_lora is not None:
+            from peft import get_peft_model
 
-        # Load PRM — separate copy of SFT model, trainable
-        model_id = kwargs.get("model", None)
-        if isinstance(model_id, str):
-            prm_model_id = model_id
-        else:
-            from trl.trainer.utils import get_config_model_id
-            prm_model_id = get_config_model_id(self.model.config)
-
-        # Qwen3.5 is a VLM — AutoModelForCausalLM fails because Qwen3_5Config
-        # stores vocab_size in text_config, not at the top level.
-        # Fix: extract text_config and pass it to from_pretrained, which handles
-        # the key remapping (model.language_model.* → model.*) automatically.
-        from transformers import AutoConfig
-        _full_config = AutoConfig.from_pretrained(prm_model_id)
-        _text_config = _full_config.get_text_config() if hasattr(_full_config, 'get_text_config') else _full_config
-        _is_vlm = getattr(_text_config, 'model_type', None) != _full_config.model_type
-
-        if _is_vlm:
-            logger.info(f"  VLM detected (type={_full_config.model_type}), using text_config (type={_text_config.model_type})")
-
-        prm_device = "cpu" if self.cpu_offload_aux else self._gpu_device
-        logger.info(f"Loading PRM from: {prm_model_id} (device={prm_device})")
-        self.prm_model = AutoModelForCausalLM.from_pretrained(
-            prm_model_id,
-            config=_text_config if _is_vlm else _full_config,
-            torch_dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-        ).to(prm_device)
-
+            self.prm_model = get_peft_model(self.prm_model, prm_lora)
+            # Frozen embeddings otherwise make checkpointed LoRA blocks lose grads.
+            self.prm_model.enable_input_require_grads()
         self.prm_model.gradient_checkpointing_enable()
         self.prm_model.train()
 
-        # Ensure reference model exists (even with beta=0)
-        if self.ref_model is None:
-            logger.info(f"Loading reference model for PRIME (device={prm_device})")
-            self.ref_model = AutoModelForCausalLM.from_pretrained(
-                prm_model_id,
-                config=_text_config if _is_vlm else _full_config,
-                torch_dtype=torch.bfloat16,
-                attn_implementation="sdpa",
-            ).to(prm_device)
-            self.ref_model.eval()
-            for p in self.ref_model.parameters():
-                p.requires_grad = False
-        else:
-            # Move reference model to correct device
-            self.ref_model.to(prm_device)
-
-        # PRM optimizer (AdamW, per original PRIME/veRL)
-        # States are lazily initialized on first step; managed via _move helpers
-        self.prm_optimizer = torch.optim.AdamW(
-            self.prm_model.parameters(),
-            lr=self.prime_prm_lr,
-            weight_decay=0.01,
+        self.prime_ref_model = load_text_causal_lm(
+            model_id,
+            device=aux_device,
+            attn_implementation=attn_implementation,
+            logger=logger,
         )
+        self.prime_ref_model.eval()
+        for parameter in self.prime_ref_model.parameters():
+            parameter.requires_grad_(False)
 
-        logger.info(f"PRIME config: beta={self.prime_beta}, baseline={self.prime_baseline_type}, "
-                    f"prm_lr={self.prime_prm_lr}, online_filter={self.prime_online_filter}")
-        logger.info(f"PRIME PRM batch: ref={self.prm_ref_batch_size}, grad={self.prm_grad_batch_size}")
-        if self.curriculum_warmup_steps > 0:
-            logger.info(f"PRIME curriculum: α warmup over {self.curriculum_warmup_steps} steps")
-        if self.zx_calibrated_prm:
-            logger.info(f"PRIME Z(x)-calibrated PRM loss enabled")
-        logger.info(f"PRIME memory: Policy offload={self.cpu_offload_policy}, Aux offload={self.cpu_offload_aux}")
-
-    # ── PRM Checkpointing ──
-
-    def _save_checkpoint(self, model, trial, metrics=None):
-        """Override to also save PRM weights + optimizer alongside policy checkpoint."""
-        super()._save_checkpoint(model, trial)
-        checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
-        prm_dir = os.path.join(checkpoint_dir, "prm")
-        os.makedirs(prm_dir, exist_ok=True)
-        prm_was_on_gpu = next(self.prm_model.parameters()).device.type == "cuda"
-        if prm_was_on_gpu:
-            self.prm_model.to("cpu")
-        torch.save(self.prm_model.state_dict(), os.path.join(prm_dir, "model.pt"))
-        torch.save(self.prm_optimizer.state_dict(), os.path.join(prm_dir, "optimizer.pt"))
-        torch.save({"prime_step_counter": self._prime_step_counter}, os.path.join(prm_dir, "state.pt"))
-        if prm_was_on_gpu:
-            self.prm_model.to(self._gpu_device)
-        logger.info(f"  [PRM] Saved PRM checkpoint to {prm_dir}")
-
-    def _load_prm_checkpoint(self, checkpoint_path):
-        """Load PRM weights + optimizer from a checkpoint directory."""
-        prm_dir = os.path.join(checkpoint_path, "prm")
-        if not os.path.exists(prm_dir):
-            logger.warning(f"  [PRM] No PRM checkpoint in {checkpoint_path}, starting PRM fresh")
-            return
-        model_path = os.path.join(prm_dir, "model.pt")
-        opt_path = os.path.join(prm_dir, "optimizer.pt")
-        state_path = os.path.join(prm_dir, "state.pt")
-        if os.path.exists(model_path):
-            self.prm_model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
-            logger.info(f"  [PRM] Loaded PRM weights from {model_path}")
-        if os.path.exists(opt_path):
-            self.prm_optimizer.load_state_dict(torch.load(opt_path, map_location="cpu", weights_only=True))
-            logger.info(f"  [PRM] Loaded PRM optimizer from {opt_path}")
-        if os.path.exists(state_path):
-            state = torch.load(state_path, map_location="cpu", weights_only=True)
-            self._prime_step_counter = state.get("prime_step_counter", 0)
-            logger.info(f"  [PRM] Restored prime_step_counter={self._prime_step_counter}")
-
-    def _get_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
-        """Get per-token log-probs from a model (no grad)."""
-        with torch.no_grad():
-            logps, _ = self._get_per_token_logps_and_entropies(
-                model, input_ids, attention_mask, logits_to_keep,
-                batch_size=batch_size, compute_entropy=False,
+        hidden_size = self.prm_model.config.hidden_size
+        self.prompt_calibration_head = None
+        if self.use_prompt_calibration:
+            self.prompt_calibration_head = PromptCalibrationHead(hidden_size).to(
+                aux_device
             )
-        return logps
 
-    def _move_to_gpu(self, model):
-        """Move model to GPU."""
-        model.to(self._gpu_device)
-        return model
+        trainable = [
+            parameter
+            for parameter in self.prm_model.parameters()
+            if parameter.requires_grad
+        ]
+        if self.prompt_calibration_head is not None:
+            trainable.extend(self.prompt_calibration_head.parameters())
+        self.prm_optimizer = torch.optim.AdamW(
+            trainable,
+            lr=self.prime_prm_lr,
+            weight_decay=float(prime_cfg.get("prm_weight_decay", 0.0)),
+        )
+        logger.info(
+            "PRIME beta=%s baseline=%s PRM=%s chunk_tokens=%s actor=%s",
+            self.prime_beta,
+            self.prime_baseline,
+            "LoRA" if prm_lora is not None else "full",
+            self.logprob_chunk_tokens,
+            "LoRA"
+            if build_lora_config(peft_cfg, enabled_key="actor") is not None
+            else "full",
+        )
+        logger.info("PRIME process reward coefficient=%s", self.prime_rm_coef)
 
-    def _move_to_cpu(self, model):
-        """Move model to CPU and free GPU cache."""
-        model.to("cpu")
-        torch.cuda.empty_cache()
-        return model
+    def _unwrap_causal_lm(self, model):
+        try:
+            unwrapped = self.accelerator.unwrap_model(model)
+        except (AttributeError, ValueError):
+            unwrapped = model
+        if hasattr(unwrapped, "get_base_model"):
+            unwrapped = unwrapped.get_base_model()
+        return unwrapped
 
-    def _move_optimizer_states(self, device):
-        """Move AdamW optimizer states to target device."""
+    def _last_completion_hidden(self, model, input_ids, attention_mask, logits_to_keep):
+        causal_lm = self._unwrap_causal_lm(model)
+        outputs = causal_lm.model(
+            input_ids=input_ids, attention_mask=attention_mask, use_cache=False
+        )
+        hidden = outputs.last_hidden_state[:, :-1, :]
+        return hidden[:, -logits_to_keep:, :], causal_lm.lm_head
+
+    def _get_per_token_logps_and_entropies(
+        self,
+        model,
+        input_ids,
+        attention_mask,
+        logits_to_keep,
+        batch_size=None,
+        compute_entropy=False,
+        **unused_multimodal_inputs,
+    ):
+        """Override every TRL actor/ref log-prob path with token-chunk projection."""
+        batch_size = batch_size or input_ids.size(0)
+        all_logps, all_entropies = [], []
+        for start in range(0, input_ids.size(0), batch_size):
+            ids = input_ids[start : start + batch_size]
+            mask = attention_mask[start : start + batch_size]
+            hidden, lm_head = self._last_completion_hidden(
+                model, ids, mask, logits_to_keep
+            )
+            targets = ids[:, -logits_to_keep:]
+            logps = selected_logprobs_from_hidden(
+                hidden,
+                lm_head.weight,
+                targets,
+                bias=lm_head.bias,
+                chunk_tokens=self.logprob_chunk_tokens,
+                temperature=self.temperature,
+                checkpoint_chunks=self.checkpoint_logprob_chunks
+                and torch.is_grad_enabled(),
+            )
+            all_logps.append(logps)
+            if compute_entropy:
+                all_entropies.append(
+                    entropy_from_hidden(
+                        hidden.detach(),
+                        lm_head.weight.detach(),
+                        bias=lm_head.bias.detach()
+                        if lm_head.bias is not None
+                        else None,
+                        chunk_tokens=self.logprob_chunk_tokens,
+                        temperature=self.temperature,
+                    )
+                )
+        return torch.cat(all_logps), torch.cat(
+            all_entropies
+        ) if compute_entropy else None
+
+    def _token_logps(
+        self, model, ids, attention_mask, logits_to_keep, *, batch_size, grad=False
+    ):
+        context = torch.enable_grad() if grad else torch.no_grad()
+        chunks = []
+        with context:
+            for start in range(0, ids.size(0), batch_size):
+                chunk_ids = ids[start : start + batch_size]
+                chunk_mask = attention_mask[start : start + batch_size]
+                hidden, lm_head = self._last_completion_hidden(
+                    model, chunk_ids, chunk_mask, logits_to_keep
+                )
+                chunks.append(
+                    selected_logprobs_from_hidden(
+                        hidden,
+                        lm_head.weight,
+                        chunk_ids[:, -logits_to_keep:],
+                        bias=lm_head.bias,
+                        chunk_tokens=self.logprob_chunk_tokens,
+                        checkpoint_chunks=grad and self.checkpoint_logprob_chunks,
+                    )
+                )
+        return torch.cat(chunks)
+
+    def _move_model(self, model, device):
+        model.to(device)
+        if device == "cpu" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _move_optimizer(self, device):
         for state in self.prm_optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device)
 
-    def _oom_safe_batch(self, initial_bs):
-        """Halve batch size on OOM. Returns a context-manager-like helper."""
-        return initial_bs
-
-    def _get_token_logps_safe(self, model, input_ids, attention_mask,
-                              logits_to_keep, batch_size):
-        """OOM-resilient wrapper: retries with halved batch on CUDA OOM."""
-        import gc
-        bs = batch_size
-        while bs >= 1:
-            try:
-                return self._get_token_logps(
-                    model, input_ids, attention_mask,
-                    logits_to_keep, batch_size=bs,
-                )
-            except torch.cuda.OutOfMemoryError:
-                gc.collect()
-                torch.cuda.empty_cache()
-                new_bs = max(1, bs // 2)
-                logger.warning(f"  [OOM] batch={bs} failed, retrying with batch={new_bs}")
-                bs = new_bs
-                if bs < 1:
-                    raise
-        raise RuntimeError("OOM even at batch=1")
-
-    def _compute_process_rewards(self, prompt_completion_ids, attention_mask,
-                                  completion_mask, logits_to_keep, batch_size,
-                                  cached_ref_logps=None):
-        """
-        Compute token-level process rewards: r_φ(y_t) = β * [log π_φ(y_t) - log π_ref(y_t)]
-        PRM and ref offloaded from CPU → GPU → CPU sequentially (never both on GPU).
-
-        If cached_ref_logps is provided, skip ref forward (ref model is frozen,
-        so logps are the same as computed during PRM update).
-        """
-        # Use larger batch for no_grad forward passes (GPU has space)
-        proc_batch = max(batch_size, self.prm_ref_batch_size)
-
-        with torch.no_grad():
-            # PRM forward (OOM-safe)
-            if self.cpu_offload_aux:
-                self._move_to_gpu(self.prm_model)
-            self.prm_model.eval()
-            prm_logps = self._get_token_logps_safe(
-                self.prm_model, prompt_completion_ids, attention_mask,
-                logits_to_keep, batch_size=proc_batch,
-            )
-            if self.cpu_offload_aux:
-                self._move_to_cpu(self.prm_model)
-
-            # Ref forward (skip if cached)
-            if cached_ref_logps is not None:
-                ref_logps = cached_ref_logps
-            else:
-                if self.cpu_offload_aux:
-                    self._move_to_gpu(self.ref_model)
-                ref_logps = self._get_token_logps_safe(
-                    self.ref_model, prompt_completion_ids, attention_mask,
-                    logits_to_keep, batch_size=proc_batch,
-                )
-                if self.cpu_offload_aux:
-                    self._move_to_cpu(self.ref_model)
-
-        # Token-level process rewards
-        process_rewards = self.prime_beta * (prm_logps - ref_logps)
-        process_rewards = process_rewards * completion_mask
-        return process_rewards, prm_logps, ref_logps
-
-    def _compute_process_returns(self, process_rewards, completion_mask):
-        """
-        Compute discounted returns: Return_process(t) = Σ_{s=t}^{T} γ^{s-t} * r_φ(y_s)
-
-        For γ=1 this is just reverse cumsum.
-        """
-        if self.prime_gamma == 1.0:
-            # Efficient reverse cumsum
-            masked = process_rewards * completion_mask
-            returns = torch.flip(
-                torch.cumsum(torch.flip(masked, dims=[1]), dim=1),
-                dims=[1]
-            )
-        else:
-            # General case with discount
-            B, T = process_rewards.shape
-            returns = torch.zeros_like(process_rewards)
-            running = torch.zeros(B, device=process_rewards.device)
-            for t in range(T - 1, -1, -1):
-                running = process_rewards[:, t] + self.prime_gamma * running
-                running = running * completion_mask[:, t]
-                returns[:, t] = running
-        return returns
-
-    def _update_prm(self, prompt_completion_ids, attention_mask,
-                     completion_mask, logits_to_keep, outcome_rewards, batch_size):
-        """
-        Online PRM update with BCE loss on outcome labels.
-
-        Memory strategy: all inputs arrive on CPU.
-        1. Offload policy model to free ~8GB
-        2. Load ref → no_grad forward all samples (batch=1) → cache ref_logps → offload ref
-        3. Load PRM → per-sample forward WITH grads → compute loss → backward
-           immediately → free graph. This avoids accumulating 64 graphs.
-        4. Clip grads → optimizer step → offload PRM → restore policy
-
-        Peak GPU during PRM forward: ~1.6GB (PRM) + ~3-5GB (one sample activations
-        for 16K seq × 248K vocab with gradient checkpointing) = ~5-7GB.
-        """
-        import gc
-        import time
-        from trl.trainer.grpo_trainer import selective_log_softmax
-
-        N = prompt_completion_ids.size(0)  # total samples (e.g. 64)
-        _mem = lambda tag: logger.info(f"  [PRM] {tag}: alloc={torch.cuda.memory_allocated(self._gpu_device)/1e9:.1f}GB, "
-                                       f"reserved={torch.cuda.memory_reserved(self._gpu_device)/1e9:.1f}GB")
-
-        # ── Step 0: Offload policy model to free GPU ──
-        policy_was_training = self.model.training
-        policy_device = next(self.model.parameters()).device
+    def _policy_to_cpu(self):
+        original_device = next(self.model.parameters()).device
+        was_training = self.model.training
         if self.cpu_offload_policy:
             self.model.to("cpu")
             for state in self.optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor) and v.is_cuda:
-                        state[k] = v.cpu()
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.is_cuda:
+                        state[key] = value.cpu()
             gc.collect()
             torch.cuda.empty_cache()
-            _mem("policy offloaded")
-        else:
-            gc.collect()
-            torch.cuda.empty_cache()
-            _mem("cache cleared (policy kept on GPU)")
-        t_start = time.time()
+        return original_device, was_training
 
-        # Move input tensors to GPU
-        pci_gpu = prompt_completion_ids.to(self._gpu_device)
-        am_gpu = attention_mask.to(self._gpu_device)
-        cm_gpu = completion_mask.to(self._gpu_device)
-        labels = (outcome_rewards > 0.5).float().to(self._gpu_device)
+    def _restore_policy(self, device, was_training):
+        if self.cpu_offload_policy:
+            self.model.to(device)
+            for state in self.optimizer.state.values():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor):
+                        state[key] = value.to(device)
+        self.model.train(was_training)
 
-        # ── Ref forward: all samples, no_grad, micro-batched (OOM-safe) ──
-        # Calculate ONCE before the epochs loop since the reference model is frozen and doesn't change
+    @torch.no_grad()
+    def _process_rewards(self, ids, attention_mask, completion_mask):
+        device = self.accelerator.device
+        logits_to_keep = completion_mask.size(1)
         if self.cpu_offload_aux:
-            self._move_to_gpu(self.ref_model)
-        ref_bs = self.prm_ref_batch_size
-        ref_done = False
-        while not ref_done:
-            try:
-                all_ref_logps = []
-                with torch.no_grad():
-                    for start in range(0, N, ref_bs):
-                        end = min(start + ref_bs, N)
-                        inp = pci_gpu[start:end]
-                        mask = am_gpu[start:end]
-                        logits = self.ref_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
-                        logits = logits[:, :-1, :][:, -logits_to_keep:, :]
-                        # No temperature scaling for PRM/ref (use raw logits)
-                        comp_ids = inp[:, -logits_to_keep:]
-                        logps = selective_log_softmax(logits, comp_ids)
-                        all_ref_logps.append(logps)
-                        del logits, logps
-                ref_logps = torch.cat(all_ref_logps, dim=0).detach()
-                del all_ref_logps
-                ref_done = True
-            except torch.cuda.OutOfMemoryError:
-                del all_ref_logps
-                gc.collect()
-                torch.cuda.empty_cache()
-                new_bs = max(1, ref_bs // 2)
-                logger.warning(f"  [OOM] ref batch={ref_bs} failed, retrying with batch={new_bs}")
-                ref_bs = new_bs
-                if ref_bs < 1:
-                    raise
+            self._move_model(self.prm_model, device)
+        self.prm_model.eval()
+        prm_logps = self._token_logps(
+            self.prm_model,
+            ids,
+            attention_mask,
+            logits_to_keep,
+            batch_size=self.prm_ref_batch_size,
+        )
         if self.cpu_offload_aux:
-            self._move_to_cpu(self.ref_model)
-        _mem(f"ref done ({N//ref_bs} fwd, batch={ref_bs})")
-        t_ref = time.time()
-        logger.info(f"  [PRM] ref forward: {t_ref - t_start:.1f}s")
+            self._move_model(self.prm_model, "cpu")
+            self._move_model(self.prime_ref_model, device)
+        ref_logps = self._token_logps(
+            self.prime_ref_model,
+            ids,
+            attention_mask,
+            logits_to_keep,
+            batch_size=self.prm_ref_batch_size,
+        )
+        if self.cpu_offload_aux:
+            self._move_model(self.prime_ref_model, "cpu")
+        # Official dp_prime.py uses the raw ratio here; beta belongs to PRM BCE.
+        return (
+            implicit_process_rewards(prm_logps, ref_logps, completion_mask),
+            ref_logps.detach(),
+        )
 
-        for epoch in range(self.prime_prm_update_epochs):
-            t_epoch_start = time.time()
-            # ── PRM forward with micro-batched gradient accumulation ──
-            if self.cpu_offload_aux:
-                self._move_to_gpu(self.prm_model)
-                self._move_optimizer_states(self._gpu_device)
-            else:
-                self._move_optimizer_states(self._gpu_device)
-            self.prm_model.train()
-            self.prm_optimizer.zero_grad()
+    def _prompt_features(self, ids, attention_mask, completion_length):
+        causal_lm = self._unwrap_causal_lm(self.prm_model)
+        prompt_ids = ids[:, :-completion_length]
+        prompt_mask = attention_mask[:, :-completion_length].to(torch.float32)
+        with torch.no_grad():
+            embeddings = causal_lm.get_input_embeddings()(prompt_ids)
+            return (embeddings * prompt_mask.unsqueeze(-1)).sum(1) / prompt_mask.sum(
+                1, keepdim=True
+            ).clamp_min(1)
 
-            grad_bs = self.prm_grad_batch_size
+    def _update_prm(self, ids, attention_mask, completion_mask, outcomes, group_size):
+        if ids.numel() == 0:
+            return None
+        device = self.accelerator.device
+        ids = ids.to(device)
+        attention_mask = attention_mask.to(device)
+        completion_mask = completion_mask.to(device)
+        outcomes = outcomes.to(device)
+        completion_length = completion_mask.size(1)
 
-            # Extension 6.6: Z(x)-calibrated PRM loss
-            # Theory: L = BCE(β·log(π_φ/π_ref) + β·log Ẑ(x), label)
-            # where log Ẑ(x) = logsumexp(Σ_t log(π_φ/π_ref)) - log K
-            # Note: logsumexp uses RAW log-ratios (without β), then β scales log Z(x)
-            #
-            # Two-pass approach:
-            #   Pass 1 (no_grad): collect raw log-ratio sums → log Z(x)
-            #   Pass 2 (with grads): seq_scores + β·log_zx → BCE → backward
-            log_zx = None
-            if self.zx_calibrated_prm:
-                with torch.no_grad():
-                    all_raw_scores = []
-                    for start in range(0, N, grad_bs):
-                        end = min(start + grad_bs, N)
-                        inp = pci_gpu[start:end]
-                        mask = am_gpu[start:end]
-                        out = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False)
-                        logits = out.logits[:, :-1, :][:, -logits_to_keep:, :]
-                        # No temperature scaling for PRM/ref (use raw logits)
-                        comp_ids = inp[:, -logits_to_keep:]
-                        chunk_logps = selective_log_softmax(logits, comp_ids)
-                        log_ratio = (chunk_logps - ref_logps[start:end]) * cm_gpu[start:end]
-                        # Raw score = Σ_t log(π_φ/π_ref) — WITHOUT β
-                        all_raw_scores.append(log_ratio.sum(dim=1))
-                        del out, logits, chunk_logps, log_ratio
-                    all_raw_scores = torch.cat(all_raw_scores, dim=0)
-                    G = self.num_generations
-                    grouped = all_raw_scores.view(-1, G)
-                    # log Z(x) = logsumexp(r/β) - log K = logsumexp(Σ log(π_φ/π_ref)) - log K
-                    log_zx = (torch.logsumexp(grouped, dim=1) -
-                              torch.log(torch.tensor(float(G), device=grouped.device)))
-                    # Expand to per-sample, scale by β
-                    log_zx = self.prime_beta * log_zx.unsqueeze(1).expand_as(grouped).reshape(-1)
-                    del all_raw_scores, grouped
+        if self.cpu_offload_aux:
+            self._move_model(self.prime_ref_model, device)
+        ref_logps = self._token_logps(
+            self.prime_ref_model,
+            ids,
+            attention_mask,
+            completion_length,
+            batch_size=self.prm_ref_batch_size,
+        ).detach()
+        if self.cpu_offload_aux:
+            self._move_model(self.prime_ref_model, "cpu")
+            self._move_model(self.prm_model, device)
+            self._move_optimizer(device)
+            if self.prompt_calibration_head is not None:
+                self.prompt_calibration_head.to(device)
 
-            # Grad pass (with or without Z(x) correction)
-            total_loss = 0.0
-            for start in range(0, N, grad_bs):
-                end = min(start + grad_bs, N)
-                inp = pci_gpu[start:end]
-                mask = am_gpu[start:end]
-                logits = self.prm_model(input_ids=inp, attention_mask=mask, use_cache=False).logits
-                logits = logits[:, :-1, :][:, -logits_to_keep:, :]
-                # No temperature scaling for PRM/ref (use raw logits)
-                comp_ids = inp[:, -logits_to_keep:]
-                prm_logps_chunk = selective_log_softmax(logits, comp_ids)
+        prompt_features = (
+            self._prompt_features(ids, attention_mask, completion_length)
+            if self.use_prompt_calibration
+            else None
+        )
+        self.prm_model.train()
+        last_loss = None
+        last_ranking = None
+        ranking_weight = (
+            float(self.calibration_cfg.get("ranking_weight", 0.0))
+            if self.use_prompt_calibration
+            else 0.0
+        )
+        for _ in range(self.prime_prm_epochs):
+            self.prm_optimizer.zero_grad(set_to_none=True)
+            total = ids.size(0)
+            for start in range(0, total, self.prm_grad_batch_size):
+                end = min(start + self.prm_grad_batch_size, total)
+                prm_logps = self._token_logps(
+                    self.prm_model,
+                    ids[start:end],
+                    attention_mask[start:end],
+                    completion_length,
+                    batch_size=end - start,
+                    grad=True,
+                )
+                intercept = (
+                    self.prompt_calibration_head(prompt_features[start:end])
+                    if self.prompt_calibration_head is not None
+                    else None
+                )
+                bce, logits = prime_prm_bce_loss(
+                    prm_logps,
+                    ref_logps[start:end],
+                    completion_mask[start:end],
+                    outcomes[start:end],
+                    beta=self.prime_beta,
+                    prompt_intercept=intercept,
+                )
+                intercept_penalty = logits.new_zeros(())
+                if intercept is not None:
+                    intercept_penalty = (
+                        float(self.calibration_cfg.get("intercept_l2", 0.0))
+                        * intercept.square().mean()
+                    )
+                loss = (bce + intercept_penalty) * ((end - start) / total)
+                loss.backward()
+                last_loss = bce.detach()
 
-                # Per-chunk loss
-                log_ratio = (prm_logps_chunk - ref_logps[start:end]) * cm_gpu[start:end]
-                seq_scores = self.prime_beta * log_ratio.sum(dim=1)
+            if ranking_weight > 0:
+                pairs = []
+                for group_start in range(0, total, group_size):
+                    labels = outcomes[group_start : group_start + group_size]
+                    positives = (
+                        torch.nonzero(labels > 0.5, as_tuple=False).flatten()
+                        + group_start
+                    )
+                    negatives = (
+                        torch.nonzero(labels <= 0.5, as_tuple=False).flatten()
+                        + group_start
+                    )
+                    pairs.extend(
+                        (int(pos), int(neg)) for pos in positives for neg in negatives
+                    )
+                ranking_values = []
+                for positive, negative in pairs:
+                    pair_scores = []
+                    for index in (positive, negative):
+                        prm_logps = self._token_logps(
+                            self.prm_model,
+                            ids[index : index + 1],
+                            attention_mask[index : index + 1],
+                            completion_length,
+                            batch_size=1,
+                            grad=True,
+                        )
+                        pair_scores.append(
+                            self.prime_beta
+                            * (
+                                (prm_logps - ref_logps[index : index + 1])
+                                * completion_mask[index : index + 1]
+                            ).sum()
+                        )
+                    pair_loss = F.softplus(-(pair_scores[0] - pair_scores[1]))
+                    (ranking_weight * pair_loss / max(len(pairs), 1)).backward()
+                    ranking_values.append(pair_loss.detach())
+                if ranking_values:
+                    last_ranking = torch.stack(ranking_values).mean()
 
-                # Extension 6.6: Add Z(x) calibration (detached — no gradient through Z)
-                if log_zx is not None:
-                    seq_scores = seq_scores + log_zx[start:end].detach()
-
-                loss_chunk = F.binary_cross_entropy_with_logits(seq_scores, labels[start:end])
-                (loss_chunk * (end - start) / N).backward()
-                total_loss += loss_chunk.item() * (end - start)
-
-                # Free graph immediately
-                del logits, prm_logps_chunk, log_ratio, seq_scores, loss_chunk
-
-            torch.nn.utils.clip_grad_norm_(self.prm_model.parameters(), 1.0)
+            parameters = [
+                parameter
+                for parameter in self.prm_model.parameters()
+                if parameter.requires_grad
+            ]
+            if self.prompt_calibration_head is not None:
+                parameters.extend(self.prompt_calibration_head.parameters())
+            torch.nn.utils.clip_grad_norm_(parameters, self.prime_prm_grad_clip)
             self.prm_optimizer.step()
-            _mem(f"prm done ({N//grad_bs} fwd, batch={grad_bs})")
-            t_prm = time.time()
-            logger.info(f"  [PRM] prm forward+backward: {t_prm - t_epoch_start:.1f}s")
 
-            prm_loss_val = total_loss / N
+        if self.cpu_offload_aux:
+            self._move_optimizer("cpu")
+            self._move_model(self.prm_model, "cpu")
+            if self.prompt_calibration_head is not None:
+                self.prompt_calibration_head.to("cpu")
+        if last_loss is None:
+            return None
+        return {
+            "bce": float(last_loss),
+            "ranking": float(last_ranking) if last_ranking is not None else None,
+        }
 
-            if self.cpu_offload_aux:
-                self._move_optimizer_states("cpu")
-                self._move_to_cpu(self.prm_model)
-                self._move_to_cpu(self.ref_model)
+    @staticmethod
+    def _pairwise_reliability(sequence_scores, outcomes, group_size):
+        correct = 0.0
+        pairs = 0.0
+        for scores, labels in zip(
+            sequence_scores.reshape(-1, group_size), outcomes.reshape(-1, group_size)
+        ):
+            for positive in scores[labels > 0.5]:
+                for negative in scores[labels <= 0.5]:
+                    correct += float(positive > negative) + 0.5 * float(
+                        positive == negative
+                    )
+                    pairs += 1.0
+        return correct / pairs if pairs else 0.5
 
-        # Clean up — keep ref_logps for reuse in _compute_process_rewards
-        cached_ref_logps = ref_logps.cpu()  # save to CPU before cleanup
-        del ref_logps
+    def _save_checkpoint(self, model, trial):
+        super()._save_checkpoint(model, trial)
+        checkpoint_root = (
+            Path(self.args.output_dir) / f"checkpoint-{self.state.global_step}"
+        )
+        self._save_prm_artifacts(checkpoint_root)
 
-        # ── Clean up GPU tensors ──
-        del pci_gpu, am_gpu, cm_gpu, labels
-        gc.collect()
-        torch.cuda.empty_cache()
+    def _save_prm_artifacts(self, checkpoint_root):
+        """Persist the complete auxiliary PRIME state below ``root/prm``."""
+        prm_dir = Path(checkpoint_root) / "prm"
+        prm_dir.mkdir(parents=True, exist_ok=True)
+        from peft import PeftModel, get_peft_model_state_dict
 
-        # NOTE: policy stays offloaded! Caller must restore it after
-        # process rewards (keeps GPU free for larger batch).
+        is_peft = isinstance(self.prm_model, PeftModel)
+        model_state = (
+            get_peft_model_state_dict(self.prm_model)
+            if is_peft
+            else self.prm_model.state_dict()
+        )
+        torch.save(model_state, prm_dir / "model.pt")
+        torch.save(self.prm_optimizer.state_dict(), prm_dir / "optimizer.pt")
+        state = {"prime_step": self._prime_step, "prm_is_peft": is_peft}
+        if self.prompt_calibration_head is not None:
+            state["prompt_calibration_head"] = self.prompt_calibration_head.state_dict()
+        torch.save(state, prm_dir / "state.pt")
 
-        mode = "train" if self.model.training else "eval"
-        self._metrics[mode]["prime/prm_loss"].append(prm_loss_val)
-        _mem("PRM done (policy still offloaded)")
-        logger.info(f"  [PRM] total update: {time.time() - t_start:.1f}s")
-        return cached_ref_logps, policy_device, policy_was_training
+    def _load_prm_checkpoint(self, checkpoint_path):
+        prm_dir = Path(checkpoint_path) / "prm"
+        if not prm_dir.exists():
+            logger.warning("No PRM checkpoint under %s", checkpoint_path)
+            return
+        state = torch.load(prm_dir / "state.pt", map_location="cpu", weights_only=True)
+        model_state = torch.load(
+            prm_dir / "model.pt", map_location="cpu", weights_only=True
+        )
+        if state.get("prm_is_peft", False):
+            from peft import set_peft_model_state_dict
 
-    def _restore_policy(self, policy_device, policy_was_training):
-        """Restore policy model + optimizer to GPU after PRM update + process rewards."""
-        self.model.to(policy_device)
-        for state in self.optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(policy_device)
-        if policy_was_training:
-            self.model.train()
+            set_peft_model_state_dict(self.prm_model, model_state)
+        else:
+            self.prm_model.load_state_dict(model_state)
+        self.prm_optimizer.load_state_dict(
+            torch.load(prm_dir / "optimizer.pt", map_location="cpu", weights_only=True)
+        )
+        self._prime_step = int(state.get("prime_step", 0))
+        if (
+            self.prompt_calibration_head is not None
+            and "prompt_calibration_head" in state
+        ):
+            self.prompt_calibration_head.load_state_dict(
+                state["prompt_calibration_head"]
+            )
+
+    def _score_candidate_inputs(self, inputs, device):
+        output = super()._generate_and_score_completions(inputs)
+        completion_text = self.processing_class.batch_decode(
+            output["completion_ids"], skip_special_tokens=True
+        )
+        reward_inputs = [
+            [{"role": "assistant", "content": text}] for text in completion_text
+        ]
+        outcomes = torch.tensor(
+            accuracy_reward(reward_inputs, [item["solution"] for item in inputs]),
+            dtype=torch.float32,
+            device=device,
+        )
+        return output, outcomes
+
+    @staticmethod
+    def _refill_example_key(example):
+        """Stable identity for excluding prompts already generated this step."""
+        return json.dumps(
+            [example.get("prompt"), example.get("solution")],
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    def _prepare_refill_stream(self, inputs, group_size):
+        if self.accelerator.num_processes != 1:
+            raise RuntimeError(
+                "Accuracy-filter refill is currently verified only for single-GPU training"
+            )
+        # Some small unit harnesses replace _sample_refill_inputs directly.
+        if not hasattr(self, "train_dataset"):
+            return
+        excluded = {
+            self._refill_example_key(inputs[index])
+            for index in range(0, len(inputs), group_size)
+        }
+        generator = torch.Generator().manual_seed(
+            int(self.args.seed) + self._prime_step * 1009
+        )
+        order = torch.randperm(len(self.train_dataset), generator=generator).tolist()
+        self._refill_indices = [
+            index
+            for index in order
+            if self._refill_example_key(self.train_dataset[index]) not in excluded
+        ]
+        self._refill_cursor = 0
+
+    def _sample_refill_inputs(self, num_groups, group_size, refill_round):
+        del refill_round  # The stream order is fixed once per optimizer step.
+        remaining = len(self._refill_indices) - self._refill_cursor
+        if remaining <= 0:
+            raise RuntimeError(
+                "Official-style refill dataset exhausted before a complete filtered batch"
+            )
+        take = min(num_groups, remaining)
+        indices = self._refill_indices[
+            self._refill_cursor : self._refill_cursor + take
+        ]
+        self._refill_cursor += take
+        rows = []
+        for index in indices:
+            example = self.train_dataset[index]
+            rows.extend([dict(example) for _ in range(group_size)])
+        return rows
+
+    def _select_rows(self, output, row_mask):
+        selected = {}
+        row_count = row_mask.numel()
+        for key, value in output.items():
+            if (
+                isinstance(value, torch.Tensor)
+                and value.ndim > 0
+                and value.size(0) == row_count
+            ):
+                selected[key] = value[row_mask]
+            else:
+                selected[key] = value
+        return selected
+
+    def _concat_refill_outputs(self, parts, target_rows):
+        result = {}
+        keys = parts[0].keys()
+        row_keys = {
+            key
+            for key in keys
+            if isinstance(parts[0][key], torch.Tensor) and parts[0][key].ndim > 0
+        }
+        for key in keys:
+            values = [part[key] for part in parts]
+            if key not in row_keys:
+                result[key] = values[0]
+                continue
+            if values[0].ndim == 1:
+                result[key] = torch.cat(values, dim=0)[:target_rows]
+                continue
+            max_length = max(value.size(1) for value in values)
+            padded = []
+            for value in values:
+                missing = max_length - value.size(1)
+                if missing == 0:
+                    padded.append(value)
+                    continue
+                if key == "prompt_ids":
+                    padded.append(F.pad(value, (missing, 0), value=self.pad_token_id))
+                elif key == "prompt_mask":
+                    padded.append(F.pad(value, (missing, 0), value=0))
+                else:
+                    padded.append(F.pad(value, (0, missing), value=0))
+            result[key] = torch.cat(padded, dim=0)[:target_rows]
+        if "num_items_in_batch" in result:
+            result["num_items_in_batch"] = result["completion_mask"].sum()
+        return result
+
+    def _valid_group_mask(self, outcomes, output, group_size):
+        keep = (
+            solvable_group_mask(
+                outcomes, group_size, self.filter_lower, self.filter_upper
+            )
+            if self.filter_accuracy
+            else torch.ones(
+                outcomes.numel() // group_size, dtype=torch.bool, device=outcomes.device
+            )
+        )
+        if self.filter_truncated_groups:
+            keep = keep & non_truncated_group_mask(
+                output["completion_mask"], group_size, self.max_completion_length
+            ).to(keep.device)
+        return keep
+
+    def _generate_with_accuracy_refill(self, inputs, device, group_size):
+        target_groups = len(inputs) // group_size
+        self._prepare_refill_stream(inputs, group_size)
+        pending_inputs = inputs
+        valid_outputs, valid_outcomes = [], []
+        valid_groups = 0
+        generated_groups = 0
+        rounds = 0
+        while valid_groups < target_groups:
+            candidate_output, candidate_outcomes = self._score_candidate_inputs(
+                pending_inputs, device
+            )
+            group_mask = self._valid_group_mask(
+                candidate_outcomes, candidate_output, group_size
+            )
+            generated_groups += int(group_mask.numel())
+            row_mask = group_mask.repeat_interleave(group_size)
+            if row_mask.any():
+                valid_outputs.append(self._select_rows(candidate_output, row_mask))
+                valid_outcomes.append(candidate_outcomes[row_mask])
+                valid_groups += int(group_mask.sum())
+            rounds += 1
+            if valid_groups >= target_groups:
+                break
+            missing = target_groups - valid_groups
+            pending_inputs = self._sample_refill_inputs(missing, group_size, rounds)
+        target_rows = target_groups * group_size
+        self._metrics["train"]["prime/refill_rounds"].append(rounds - 1)
+        self._metrics["train"]["prime/refill_generated_groups"].append(
+            generated_groups
+        )
+        self._metrics["train"]["prime/refill_acceptance"].append(
+            target_groups / generated_groups
+        )
+        return self._concat_refill_outputs(valid_outputs, target_rows), torch.cat(
+            valid_outcomes
+        )[:target_rows]
 
     def _generate_and_score_completions(self, inputs):
-        """
-        Override to inject PRIME dense advantage computation.
-
-        Flow:
-        1. Call parent to generate completions and compute outcome rewards
-        2. Offload ALL GPU tensors to CPU → free GPU
-        3. Update PRM online (GPU is mostly empty, ~9GB policy+optimizer)
-        4. Compute process rewards with UPDATED PRM (per PRIME paper)
-        5. Restore tensors to GPU, compute dense advantage
-        """
-        import gc
-        import time
-
+        if not self.model.training:
+            return super()._generate_and_score_completions(inputs)
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
-        num_generations = self.num_generations if mode == "train" else self.num_generations_eval
-        _mem = lambda tag: logger.info(f"  [{tag}] alloc={torch.cuda.memory_allocated(device)/1e9:.1f}GB, "
-                                       f"reserved={torch.cuda.memory_reserved(device)/1e9:.1f}GB")
-
-        # Force manual synchronization to the colocated vLLM engine before generation starts:
-        if hasattr(self, "vllm_generation") and self.vllm_generation is not None:
-            logger.info("Manually triggering weight synchronization to vLLM engine...")
-            self.vllm_generation.sync_weights()
-
-        # ── Step 1: Parent generates completions and computes outcome rewards ──
-        t0 = time.time()
-        output = super()._generate_and_score_completions(inputs)
-        t1 = time.time()
-        _mem("after parent")
-        logger.info(f"  [TIMING] parent generate+score: {t1-t0:.1f}s")
-
-        # Extract outcome rewards from parent's advantages:
-        # Parent computes: advantages = rewards - mean_grouped_rewards (then optionally / std)
-        # We need binary correctness labels. Decode completions and check accuracy.
-        completion_ids = output["completion_ids"]
-        completions_text = self.processing_class.batch_decode(
-            completion_ids, skip_special_tokens=True
+        group_size = (
+            self.num_generations if mode == "train" else self.num_generations_eval
         )
-        completions_for_reward = [
-            [{"role": "assistant", "content": c}] for c in completions_text
-        ]
-        # inputs is from RepeatSampler: each prompt repeated num_generations times
-        # e.g. [p0,p0,p0,p0,p0,p0,p0,p0, p1,p1,...] (64 items for 8 prompts × 8 gens)
-        # completions from parent are ordered same way: 8 completions per prompt
-        # So solutions should be 1:1 with completions — no extra repeat needed
-        solutions_repeated = [inp["solution"] for inp in inputs]
-        # outcome_rewards: binary 0/1 per completion (on CPU to avoid GPU pressure)
-        outcome_rewards_cpu = torch.tensor(
-            accuracy_reward(completions_for_reward, solutions_repeated),
-            dtype=torch.float32,
-        )
-
-        # DIAGNOSTIC: Check outcomes for ALL prompts (not just first)
-        if self._prime_step_counter < 3:
-            K = num_generations
-            n_prompts = len(outcome_rewards_cpu) // K
-            logger.info(f"  [DIAG] Prompt 0, K={K} completions (first 100 chars):")
-            first_prompt_completions = completions_text[:K]
-            for i, c in enumerate(first_prompt_completions):
-                logger.info(f"    [{i}] reward={outcome_rewards_cpu[i].item():.0f} | {c[:100]}")
-            unique_texts = len(set(first_prompt_completions))
-            logger.info(f"  [DIAG] Unique texts: {unique_texts}/{K}")
-            # Summary for ALL prompts
-            logger.info(f"  [DIAG] All {n_prompts} prompts outcome summary:")
-            for p in range(n_prompts):
-                rewards_p = outcome_rewards_cpu[p*K:(p+1)*K]
-                n_correct = rewards_p.sum().int().item()
-                status = "FILTERED" if (n_correct == 0 or n_correct == K) else "ok"
-                logger.info(f"    Prompt {p}: {n_correct}/{K} correct [{status}]")
-
-        del completions_text, completions_for_reward, solutions_repeated
-
-        # Prepare PRM inputs on CPU (needed for both _update_prm and _compute_process_rewards)
-        prompt_completion_ids_cpu = torch.cat(
-            [output["prompt_ids"], output["completion_ids"]], dim=1
-        ).cpu()
-        attention_mask_cpu = torch.cat(
-            [output["prompt_mask"], output["completion_mask"]], dim=1
-        ).cpu()
-        completion_mask_cpu = output["completion_mask"].cpu()
-        logits_to_keep = output["completion_ids"].size(1)
-        batch_size = self.args.per_device_train_batch_size
-
-        # ── Step 2: Offload ALL GPU tensors to CPU before PRM update ──
-        # Move output dict to CPU
-        output_cpu = {}
-        for k, v in output.items():
-            if isinstance(v, torch.Tensor) and v.is_cuda:
-                output_cpu[k] = v.cpu()
-            else:
-                output_cpu[k] = v
-        output.clear()
-
-        # Force free all GPU memory only if offloading policy
-        if self.cpu_offload_policy:
-            gc.collect()
-            torch.cuda.empty_cache()
-
-        logger.info(f"GPU after offload: {get_gpu_memory_info()}")
-
-        # ── Step 3: Online PRM update (GPU has only ~9GB: policy + optimizer) ──
-        # After this, policy stays offloaded → GPU mostly free for process rewards
-        cached_ref_logps = None
-        policy_device = device
-        policy_was_training = self.model.training
-        if mode == "train":
-            t2 = time.time()
-            cached_ref_logps, policy_device, policy_was_training = self._update_prm(
-                prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu,
-                logits_to_keep, outcome_rewards_cpu, batch_size,
+        if mode == "train" and self.filter_accuracy and self.filter_refill:
+            output, outcomes = self._generate_with_accuracy_refill(
+                inputs, device, group_size
             )
-            t3 = time.time()
-            logger.info(f"  [TIMING] PRM update: {t3-t2:.1f}s")
-
-        # ── Step 4: Compute process rewards (policy still offloaded → batch=8 safe) ──
-        # Reuses cached ref_logps from PRM update (ref model is frozen → same logps)
-        prompt_completion_ids_gpu = prompt_completion_ids_cpu.to(device)
-        attention_mask_gpu = attention_mask_cpu.to(device)
-        completion_mask_gpu = completion_mask_cpu.to(device)
-
-        # Move cached ref_logps to GPU if available
-        ref_logps_gpu = cached_ref_logps.to(device) if cached_ref_logps is not None else None
-
-        with torch.no_grad():
-            t4 = time.time()
-            process_rewards, _, _ = self._compute_process_rewards(
-                prompt_completion_ids_gpu, attention_mask_gpu, completion_mask_gpu,
-                logits_to_keep, batch_size, cached_ref_logps=ref_logps_gpu,
-            )
-            t5 = time.time()
-            _mem("after process rewards")
-            logger.info(f"  [TIMING] process rewards: {t5-t4:.1f}s (ref={'cached' if ref_logps_gpu is not None else 'computed'})")
-        del ref_logps_gpu, cached_ref_logps
-
-        # Free the temporary GPU copies (we'll restore from output_cpu)
-        del prompt_completion_ids_gpu, attention_mask_gpu
-        del prompt_completion_ids_cpu, attention_mask_cpu, completion_mask_cpu
-
-        # ── Step 4.5: Restore policy model to GPU (needed for training backward) ──
-        if self.cpu_offload_policy:
-            gc.collect()
-            torch.cuda.empty_cache()
-            self._restore_policy(policy_device, policy_was_training)
-            _mem("policy restored")
-
-        # ── Step 5: Restore output dict to GPU ──
-        for k, v in output_cpu.items():
-            if isinstance(v, torch.Tensor):
-                output[k] = v.to(device)
-            else:
-                output[k] = v
-        del output_cpu
-
-        # completion_mask is back on GPU via output
-        completion_mask = output["completion_mask"]
-        outcome_rewards = outcome_rewards_cpu.to(device)
-        del outcome_rewards_cpu
-
-        # ── Step 6: Compute PRIME advantage (paper-faithful) ──
-
-        # --- Fix 2: batch_norm on PRM scores (like original dp_prime.py) ---
-        # Normalize token_level_scores so max cumulative return = 1.0
-        masked_scores = process_rewards * completion_mask
-        reverse_cumsum = torch.cumsum(masked_scores.flip(dims=[1]), dim=-1).flip(dims=[1])
-        norm_factor = reverse_cumsum.abs().max().clamp(min=1e-6)
-        process_rewards = process_rewards / norm_factor
-
-        # Get baseline function
-        baseline_fn = BASELINE_FUNCS[self.prime_baseline_type]
-        baseline_kwargs = {}
-        if self.prime_baseline_type == "dpo_z":
-            baseline_kwargs["beta"] = self.prime_beta
-
-        # --- Outcome component (RLOO baseline, no separate normalization) ---
-        outcome_baseline = baseline_fn(outcome_rewards, num_generations, **baseline_kwargs)
-        outcome_component = outcome_rewards - outcome_baseline  # (local_B,)
-
-        # --- Process component (RLOO baseline on per-sample MEAN reward) ---
-        # Matches original verl dp_prime.py + core_algos.py:
-        #   1. Compute per-sample mean of token-level process rewards
-        #   2. RLOO baseline from those per-sample means
-        #   3. Each token: r_{i,t} * K/(K-1) - sum_means/(K-1)
-        #   4. Compute discounted returns on centered token rewards
-        K = num_generations
-        T = process_rewards.shape[1]
-        num_tokens_per_sample = completion_mask.sum(dim=1).clamp(min=1)  # (B,)
-        per_sample_mean = (process_rewards * completion_mask).sum(dim=1) / num_tokens_per_sample  # (B,)
-
-        # Group means and compute RLOO-style baseline
-        grouped_means = per_sample_mean.view(-1, K)  # (num_prompts, K)
-        sum_means = grouped_means.sum(dim=1, keepdim=True)  # (num_prompts, 1)
-        # RLOO: each token gets r * K/(K-1) - sum_means/(K-1)
-        baseline_per_prompt = sum_means / max(K - 1, 1)  # (num_prompts, 1)
-        baseline = baseline_per_prompt.expand_as(grouped_means).reshape(-1)  # (B,)
-
-        process_centered = process_rewards * K / max(K - 1, 1) - baseline.unsqueeze(1)
-        process_centered = process_centered * completion_mask
-        process_returns_centered = self._compute_process_returns(process_centered, completion_mask)
-
-        # --- Online prompt filter ---
-        if self.prime_online_filter:
-            grouped_outcomes = outcome_rewards.view(-1, num_generations)
-            all_correct = grouped_outcomes.sum(dim=1) == num_generations
-            all_wrong = grouped_outcomes.sum(dim=1) == 0
-            skip_mask = (all_correct | all_wrong).repeat_interleave(num_generations)
-            # Zero out advantages for filtered prompts
-            outcome_component = outcome_component * (~skip_mask).float()
-            process_returns_centered = process_returns_centered * (~skip_mask).float().unsqueeze(1)
-            frac_filtered = skip_mask.float().mean().item()
-            self._metrics[mode]["prime/filtered_prompts_frac"].append(frac_filtered)
-
-        # --- Combine: A_t = α · Return_process(t) + Return_outcome ---
-        if self.curriculum_warmup_steps > 0:
-            alpha = min(1.0, self._prime_step_counter / max(1, self.curriculum_warmup_steps))
         else:
-            alpha = 1.0
+            output, outcomes = self._score_candidate_inputs(inputs, device)
 
-        # outcome_component is (B,), needs to be (B, 1) for broadcasting
-        dense_advantages = alpha * process_returns_centered + outcome_component.unsqueeze(1)
-
-        # --- Fix 1: masked_whiten on final advantages (like original core_algos.py) ---
-        # This ensures advantages have mean≈0, std≈1, preventing runaway gradients
-        adv_vals = dense_advantages[completion_mask.bool()]
-        if adv_vals.numel() > 1:
-            adv_mean = adv_vals.mean()
-            adv_std = adv_vals.std().clamp(min=1e-8)
-            dense_advantages = (dense_advantages - adv_mean) / (adv_std + 1e-4)
-            dense_advantages = dense_advantages * completion_mask
-
-        # Increment step counter for curriculum
-        self._prime_step_counter += 1
-
-        # Token-level dense advantages for PRIME policy gradient
-        output["advantages"] = dense_advantages
-
-        # ── Logging ──
-        self._metrics[mode]["prime/process_reward_mean"].append(
-            process_rewards[completion_mask.bool()].mean().item()
+        ids = torch.cat([output["prompt_ids"], output["completion_ids"]], dim=1)
+        attention_mask = torch.cat(
+            [output["prompt_mask"], output["completion_mask"]], dim=1
         )
-        self._metrics[mode]["prime/process_reward_std"].append(
-            process_rewards[completion_mask.bool()].std().item()
-        )
-        self._metrics[mode]["prime/outcome_component_mean"].append(
-            outcome_component.mean().item()
-        )
-        proc_mean = process_returns_centered[completion_mask.bool()].mean().item()
-        self._metrics[mode]["prime/process_component_mean"].append(proc_mean)
-        self._metrics[mode]["prime/advantage_mean"].append(
-            dense_advantages[completion_mask.bool()].mean().item()
-        )
-        if self.curriculum_warmup_steps > 0:
-            self._metrics[mode]["prime/curriculum_alpha"].append(alpha)
+        completion_mask = output["completion_mask"]
 
+        policy_device, policy_was_training = self._policy_to_cpu()
+        process_rewards, _ = self._process_rewards(ids, attention_mask, completion_mask)
+
+        keep_groups = self._valid_group_mask(outcomes, output, group_size)
+        keep_rows = keep_groups.repeat_interleave(group_size)
+        prm_rows = keep_rows.clone()
+
+        sequence_scores = (process_rewards * completion_mask).sum(dim=1)
+        reliability = (
+            self._pairwise_reliability(
+                sequence_scores[keep_rows], outcomes[keep_rows], group_size
+            )
+            if keep_rows.any()
+            else 0.5
+        )
+
+        guided_weights = torch.ones_like(outcomes)
+        if self.use_guided_search:
+            selection = select_prm_guided_candidates(
+                sequence_scores,
+                group_size=group_size,
+                keep=int(self.guided_cfg.get("keep", group_size)),
+                mode=self.guided_cfg.get("mode", "topk"),
+                temperature=float(self.guided_cfg.get("temperature", 1.0)),
+                allow_biased_update=bool(
+                    self.guided_cfg.get("allow_biased_update", False)
+                ),
+            )
+            keep_rows = keep_rows & selection.selected_mask.to(device)
+            guided_weights = selection.sample_weights.to(device)
+            self._metrics[mode]["prime/guided_off_policy"].append(
+                float(selection.is_off_policy)
+            )
+
+        alpha = process_reward_weight(
+            step=self._prime_step,
+            schedule=self.process_schedule,
+            warmup_steps=self.process_warmup_steps,
+            reliability=reliability,
+            reliability_floor=self.reliability_floor,
+            reliability_full=self.reliability_full,
+        ) * self.prime_rm_coef
+        result = compute_prime_advantages(
+            outcomes,
+            process_rewards,
+            completion_mask,
+            group_size=group_size,
+            filter_lower=self.filter_lower if self.filter_accuracy else 0.0,
+            filter_upper=self.filter_upper if self.filter_accuracy else 1.0,
+            baseline=self.prime_baseline,
+            dpo_z_beta=float(self.prime_cfg.get("dpo_z_beta", 0.1)),
+            dpo_z_leave_one_out=bool(self.prime_cfg.get("dpo_z_leave_one_out", True)),
+            gamma=self.prime_gamma,
+            process_weight=alpha,
+        )
+        advantages = result.advantages * guided_weights.unsqueeze(1)
+        advantages[~keep_rows] = 0
+        output["completion_mask"] = output["completion_mask"] * keep_rows.unsqueeze(1)
+        output["advantages"] = advantages
+        output["num_items_in_batch"] = output["completion_mask"].sum()
+
+        prm_loss = None
+        if mode == "train" and prm_rows.any():
+            prm_loss = self._update_prm(
+                ids[prm_rows],
+                attention_mask[prm_rows],
+                completion_mask[prm_rows],
+                outcomes[prm_rows],
+                group_size,
+            )
+        self._restore_policy(policy_device, policy_was_training)
+
+        filtered_fraction = 1.0 - keep_groups.float().mean().item()
+        self._metrics[mode]["prime/filtered_prompts_frac"].append(filtered_fraction)
+        self._metrics[mode]["prime/process_weight"].append(alpha)
+        self._metrics[mode]["prime/prm_reliability"].append(reliability)
+        self._metrics[mode]["prime/process_norm"].append(
+            float(result.process_normalization_factor)
+        )
+        if prm_loss is not None:
+            self._metrics[mode]["prime/prm_loss"].append(prm_loss["bce"])
+            if prm_loss["ranking"] is not None:
+                self._metrics[mode]["prime/prm_ranking_loss"].append(
+                    prm_loss["ranking"]
+                )
+        self._prime_step += int(mode == "train")
         return output
 
 
-# ──────────────────────────────────────────────────────────────
-# Reward functions (same as train_grpo.py)
-# ──────────────────────────────────────────────────────────────
-
-def accuracy_reward(completions, solution, log_metric=None, **kwargs):
-    """Check if model answer matches ground truth. Reward: 1.0/0.0."""
-    rewards = []
-    num_correct = 0
-    for completion, sol in zip(completions, solution):
-        content = completion[0]["content"] if isinstance(completion, list) else completion
-        predicted = extract_boxed_answer(content)
-        if predicted is not None and verify_answer(predicted, sol):
-            rewards.append(1.0)
-            num_correct += 1
-        else:
-            rewards.append(0.0)
-    if log_metric and len(rewards) > 0:
-        log_metric("accuracy", num_correct / len(rewards))
-    return rewards
-
-
-def format_reward(completions, log_metric=None, **kwargs):
-    """Check for </think> and \\boxed{} format. Reward: 0.0/0.5/1.0."""
-    rewards = []
-    format_ok_count = 0
-    for completion in completions:
-        content = completion[0]["content"] if isinstance(completion, list) else completion
-        score = 0.0
-        # <think> is in prompt prefill, completion only has </think>
-        if "</think>" in content:
-            score += 0.5
-        if "\\boxed{" in content:
-            score += 0.5
-
-        if score >= 1.0:
-            format_ok_count += 1
-        rewards.append(score)
-    if log_metric and len(rewards) > 0:
-        log_metric("format_compliance", format_ok_count / len(rewards))
-    return rewards
-
-
-
-
-# ──────────────────────────────────────────────────────────────
-# Training
-# ──────────────────────────────────────────────────────────────
-
-def train(config: dict, data_dir: str = None, output_dir: str = None):
-    """Run PRIME-GRPO training."""
+def train(config: dict, data_dir: str | None = None, output_dir: str | None = None):
     model_cfg = config.get("model", {})
     grpo_cfg = config.get("grpo", {})
     train_cfg = config.get("training", {})
+    validation_cfg = config.get("validation", {})
     prime_cfg = config.get("prime", {})
+    memory_cfg = config.get("memory", {})
+    peft_cfg = config.get("peft", {})
+    model_name = model_cfg.get("name", "Qwen/Qwen3.5-0.8B")
+    attn_implementation = model_cfg.get("attn_implementation", "sdpa")
+    run_name = config.get("run_name", "prime_qwen35_08b")
+    output_dir = output_dir or f"./outputs/{run_name}"
 
-    model_name = model_cfg.get("name", "Qwen/Qwen3.5-0.8B-Base")
-    run_name = config.get("run_name", "prime_grpo")
-    loss_type = grpo_cfg.get("loss_type", "grpo")
-
-    if output_dir is None:
-        output_dir = f"./outputs/{run_name}"
-
-    logger.info(f"PRIME-GRPO | loss_type={loss_type} | model={model_name}")
-    logger.info(f"PRIME config: {prime_cfg}")
-    logger.info(f"Sampling: temperature={grpo_cfg.get('temperature', 1.0)}, "
-                f"top_p={grpo_cfg.get('top_p', 1.0)}, top_k={grpo_cfg.get('top_k', 0)}")
-    logger.info(f"GPU info: {get_gpu_memory_info()}")
-
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(True)
-
-    if data_dir:
-        train_dataset = load_from_disk(data_dir)
-        logger.info(f"Loaded dataset: {len(train_dataset)} examples")
-        num_samples = grpo_cfg.get("num_samples", None)
-        if num_samples and num_samples < len(train_dataset):
-            train_dataset = train_dataset.select(range(num_samples))
-            logger.info(f"Truncated to {num_samples} examples")
-    else:
+    if data_dir is None:
         raise ValueError("--data-dir is required")
+    dataset = load_from_disk(data_dir)
+    validate_preformatted_math_rl_dataset(dataset)
+    if grpo_cfg.get("num_samples") and grpo_cfg["num_samples"] < len(dataset):
+        dataset = dataset.select(range(grpo_cfg["num_samples"]))
 
-    grpo_args = GRPOConfig(
+    eval_dataset = None
+    eval_data_dir = validation_cfg.get("data_dir")
+    if eval_data_dir:
+        eval_dataset = load_from_disk(eval_data_dir)
+        validate_preformatted_math_rl_dataset(eval_dataset)
+        eval_samples = int(validation_cfg.get("num_samples", len(eval_dataset)))
+        eval_dataset = eval_dataset.select(
+            range(min(eval_samples, len(eval_dataset)))
+        )
+        logger.info("Loaded validation dataset: %d examples", len(eval_dataset))
+
+    patch_vllm_language_model_only(
+        bool(model_cfg.get("language_model_only", True)), logger=logger
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    max_prompt_tokens = validate_prompt_token_lengths(
+        dataset,
+        tokenizer,
+        int(grpo_cfg.get("max_prompt_length", 1024)),
+    )
+    logger.info("Prompt token audit: max=%d", max_prompt_tokens)
+    if eval_dataset is not None:
+        max_eval_prompt_tokens = validate_prompt_token_lengths(
+            eval_dataset,
+            tokenizer,
+            int(grpo_cfg.get("max_prompt_length", 1024)),
+        )
+        logger.info(
+            "Validation: n=%d max_prompt_tokens=%d eval_steps=%d "
+            "num_generations=1 sampler=(temperature=%s, top_p=%s, top_k=%s)",
+            len(eval_dataset),
+            max_eval_prompt_tokens,
+            int(validation_cfg.get("eval_steps", 20)),
+            grpo_cfg.get("temperature", 1.0),
+            grpo_cfg.get("top_p", 1.0),
+            grpo_cfg.get("top_k", 0),
+        )
+    actor_model = load_text_causal_lm(
+        model_name,
+        device="cpu",
+        attn_implementation=attn_implementation,
+        logger=logger,
+    )
+
+    args = GRPOConfig(
         output_dir=output_dir,
         run_name=run_name,
-        loss_type=loss_type,
-        scale_rewards=grpo_cfg.get("scale_rewards", "group"),
+        loss_type=grpo_cfg.get("loss_type", "grpo"),
+        scale_rewards="none",
         epsilon=grpo_cfg.get("epsilon", 0.2),
-        epsilon_high=grpo_cfg.get("epsilon_high", None),
+        epsilon_high=grpo_cfg.get("epsilon_high"),
         beta=grpo_cfg.get("beta", 0.0),
-        num_generations=grpo_cfg.get("num_generations", 8),
-        max_completion_length=grpo_cfg.get("max_completion_length", 8192),
+        num_generations=grpo_cfg.get("num_generations", 4),
+        max_completion_length=grpo_cfg.get("max_completion_length", 3072),
         temperature=grpo_cfg.get("temperature", 1.0),
         top_p=grpo_cfg.get("top_p", 1.0),
         top_k=grpo_cfg.get("top_k", 0),
-        mask_truncated_completions=grpo_cfg.get("mask_truncated_completions", True),
-        generation_batch_size=grpo_cfg.get("generation_batch_size", None),
+        mask_truncated_completions=grpo_cfg.get("mask_truncated_completions", False),
+        generation_batch_size=grpo_cfg.get("generation_batch_size"),
         num_iterations=train_cfg.get("num_iterations", 1),
         num_train_epochs=train_cfg.get("num_train_epochs", 1),
-        # PRIME requires batch_size=1: no Liger kernel → full 248K logits in memory
-        # batch=1 → 1×T×248K logits ≈ 7.6GB; batch=2 → 15GB+ → OOM on backward
-        per_device_train_batch_size=1,
+        max_steps=train_cfg.get("max_steps", -1),
+        per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 1),
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 64),
         learning_rate=train_cfg.get("learning_rate", 5e-7),
-        lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
-        weight_decay=train_cfg.get("weight_decay", 0.01),
+        lr_scheduler_type=train_cfg.get("lr_scheduler_type", "constant"),
+        warmup_ratio=train_cfg.get("warmup_ratio", 0.0),
+        weight_decay=train_cfg.get("weight_decay", 0.0),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         dataloader_num_workers=train_cfg.get("dataloader_num_workers", 0),
+        seed=train_cfg.get("seed", 42),
+        eval_strategy="steps" if eval_dataset is not None else "no",
+        eval_steps=int(validation_cfg.get("eval_steps", 20)),
+        eval_on_start=bool(validation_cfg.get("eval_on_start", False)),
+        per_device_eval_batch_size=int(
+            validation_cfg.get("per_device_eval_batch_size", 8)
+        ),
+        num_generations_eval=int(validation_cfg.get("num_generations", 1)),
         bf16=True,
         gradient_checkpointing=True,
         save_strategy="steps",
         save_steps=train_cfg.get("save_steps", 100),
         save_total_limit=train_cfg.get("save_total_limit", 2),
-        save_only_model=train_cfg.get("save_only_model", False),
         logging_steps=train_cfg.get("logging_steps", 10),
         report_to="tensorboard",
+        log_completions=grpo_cfg.get("log_completions", True),
+        num_completions_to_print=grpo_cfg.get("num_completions_to_print", 8),
         optim=train_cfg.get("optim", "adamw_torch"),
         use_vllm=grpo_cfg.get("use_vllm", True),
         vllm_mode=grpo_cfg.get("vllm_mode", "colocate"),
         vllm_enable_sleep_mode=grpo_cfg.get("vllm_enable_sleep_mode", True),
-        vllm_importance_sampling_correction=grpo_cfg.get("vllm_importance_sampling_correction", False),
-        **(
-            {
-                "vllm_gpu_memory_utilization": grpo_cfg.get("vllm_gpu_memory_utilization", 0.3),
-                "vllm_max_model_length": grpo_cfg.get("max_model_len", 16384),
-            }
-            if grpo_cfg.get("vllm_mode", "colocate") == "colocate"
-            else {
-                "vllm_server_port": grpo_cfg.get("vllm_server_port", 8000),
-                "vllm_group_port": grpo_cfg.get("vllm_group_port", 51216),
-            }
+        vllm_importance_sampling_correction=grpo_cfg.get(
+            "vllm_importance_sampling_correction", False
         ),
-        use_liger_kernel=False,  # PRIME needs (B,T) token-level advantages; Liger expects (B,)
-        reward_weights=[1.0],  # Only accuracy_reward; PRIME overrides advantages entirely
-        model_init_kwargs={
-            "torch_dtype": "bfloat16",
-            "attn_implementation": "sdpa",
-        },
+        vllm_gpu_memory_utilization=grpo_cfg.get("vllm_gpu_memory_utilization", 0.30),
+        vllm_max_model_length=grpo_cfg.get(
+            "max_model_len",
+            grpo_cfg.get("max_prompt_length", 1024)
+            + grpo_cfg.get("max_completion_length", 3072),
+        ),
+        use_liger_kernel=False,
+        reward_weights=[1.0],
     )
+    actor_lora = build_lora_config(peft_cfg, enabled_key="actor")
+    # GRPOTrainer creates the PEFT actor before Trainer.__init__ seeds RNG.
+    # Seed explicitly so PRIME variants share the same initial LoRA subspace.
+    set_seed(int(args.seed))
 
     trainer = PrimeGRPOTrainer(
         prime_cfg=prime_cfg,
-        model=model_name,
-        args=grpo_args,
-        train_dataset=train_dataset,
-        reward_funcs=[accuracy_reward],  # format_reward unused — PRIME overrides advantages
+        memory_cfg=memory_cfg,
+        peft_cfg=peft_cfg,
+        model_id=model_name,
+        attn_implementation=attn_implementation,
+        model=actor_model,
+        processing_class=tokenizer,
+        args=args,
+        train_dataset=dataset,
+        eval_dataset=eval_dataset,
+        reward_funcs=[accuracy_reward],
+        peft_config=actor_lora,
+    )
+    install_vllm_sync_canary(
+        trainer,
+        output_dir=output_dir,
+        logger=logger,
+        enabled=bool(grpo_cfg.get("verify_vllm_weight_sync", True)),
+        require_change_after_step=bool(
+            grpo_cfg.get("require_vllm_weight_change_after_step", True)
+        ),
     )
 
-    # Resume from checkpoint: true = auto-detect latest, string = explicit path, null = fresh
-    resume_ckpt = config.get("training", {}).get("resume_from_checkpoint", None)
-    if resume_ckpt is True:
-        import glob
-        ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")),
-                       key=lambda p: int(p.split("-")[-1]))
-        resume_ckpt = ckpts[-1] if ckpts else None
-        if resume_ckpt:
-            logger.info(f"Auto-resuming from latest checkpoint: {resume_ckpt}")
-        else:
-            logger.info("No checkpoints found, starting fresh")
-    elif resume_ckpt:
-        logger.info(f"Resuming from checkpoint: {resume_ckpt}")
-
-    # Load PRM weights from checkpoint (HF Trainer only restores policy)
-    if resume_ckpt:
-        trainer._load_prm_checkpoint(resume_ckpt)
-
-    train_result = trainer.train(resume_from_checkpoint=resume_ckpt)
-
-    logger.info(f"Saving model to {output_dir}")
+    resume = train_cfg.get("resume_from_checkpoint")
+    if resume is True:
+        checkpoints = sorted(
+            glob.glob(os.path.join(output_dir, "checkpoint-*")),
+            key=lambda p: int(p.rsplit("-", 1)[-1]),
+        )
+        resume = checkpoints[-1] if checkpoints else None
+    if resume:
+        trainer._load_prm_checkpoint(resume)
+    result = trainer.train(resume_from_checkpoint=resume)
     trainer.save_model(output_dir)
-
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
-    logger.info(f"Training complete! Metrics: {metrics}")
+    trainer._save_prm_artifacts(output_dir)
+    trainer.log_metrics("train", result.metrics)
+    trainer.save_metrics("train", result.metrics)
+    logger.info("Training complete: %s; GPU: %s", result.metrics, get_gpu_memory_info())
     return trainer
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PRIME-GRPO Training")
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--data-dir", type=str, required=True)
-    parser.add_argument("--output-dir", type=str, default=None)
-    args = parser.parse_args()
-
-    project_root = Path(__file__).parent.parent
-    base_config_path = project_root / "configs" / "grpo_base.yaml"
-    config = load_config(args.config, base_config_path=str(base_config_path))
-    train(config=config, data_dir=args.data_dir, output_dir=args.output_dir)
+    parser = argparse.ArgumentParser(description="Author-aligned memory-safe PRIME")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--output-dir")
+    cli = parser.parse_args()
+    root = Path(__file__).parent.parent
+    config = load_config(
+        cli.config, base_config_path=str(root / "configs" / "grpo_base.yaml")
+    )
+    train(config, cli.data_dir, cli.output_dir)
 
 
 if __name__ == "__main__":
