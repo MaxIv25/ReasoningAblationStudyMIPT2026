@@ -16,7 +16,7 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
 - [x] Phase 8: Restart constant-LR `5e-6` GRPO safely on H200 GPU 7
 - [x] Phase 9: Audit, commit, and push the reproducible research worktree
 - [x] Phase 10: Bootstrap a thread-limited environment and artifacts on `ssh opt`
-- [ ] Phase 11: Validate and launch constant-LR `1e-5` GRPO on `ssh opt`
+- [x] Phase 11: Validate and launch constant-LR `1e-5` GRPO on `ssh opt`
 - [ ] Phase 12: Record multi-server provenance, runtime gates, and handoff
 
 ## Key Questions
@@ -66,10 +66,17 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
 - Две попытки `uv lock --offline` не нашли registry metadata в локальных
   caches, а локальный online resolver завис на network metadata. Lock был
   безопасно сгенерирован online на `ssh opt` за 6.94 s с concurrency=2.
+- Второй A100 smoke дошёл до actor/model load, но launch-only
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` оказался несовместим с
+  vLLM sleep-mode CuMemAllocator. Retry без этой переменной прошёл два шага.
+- System Python не мог собрать config tests из-за отсутствующего torch;
+  contracts выполнены в project-local opt environment после push/fast-forward.
 
 ## Status
 
-**Phase 11 active** — custom merged SFT and both datasets match H200 SHA-256
-manifests on `ssh opt`. The A100 default environment excludes optional
-TileLang, passes the original Qwen3.5 import loop twice and the full 91-test
-suite with two threads. Re-run the two-step GPU smoke before the full `1e-5`.
+**Phase 12 active** — A100 two-step integration smoke and one-step 16K
+full-context gate both finish cleanly with post-update weight-change canaries.
+The full `constant LR=1e-5` run is live on opt GPU 0 and has passed vLLM init
+and step-0 post-reload sync; baseline validation is running. The recoverable
+`5e-6` H200 GPU-7 run is healthy at step 14/187. Keep both artifacts
+non-evidence until clean finish and frozen-val `maj@8`.

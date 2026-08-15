@@ -49,3 +49,17 @@
   checkpoint 1.5 GiB, RL train dataset 708 KiB, validation split 44 KiB.
 - Opt system Python is 3.10 and `uv` was not in PATH; project lock requires
   Python 3.11. Setup must be user-local and build-limited.
+- The transferred merged SFT and both RL datasets match their H200 SHA-256
+  manifests byte-for-byte.
+- FLA 0.5.0 evaluates `TileLangBackend.is_available()` before
+  `is_enabled()`, so `FLA_TILELANG=0` still imports TileLang. TileLang 0.1.9
+  bundled TVM conflicts with `tvm_ffi` on the A100 environment. Keeping
+  TileLang as an optional Hopper extra restores the Qwen3.5 import and leaves
+  the A100 on the Triton/Torch fallback path.
+- Do not set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` for colocated
+  vLLM sleep mode: its CuMemAllocator memory pool asserts that expandable
+  segments are unsupported.
+- A100 16K gate evidence: one actor microbatch of 8 trajectories completed in
+  74.76 s; train completion mean/max 2951/6823, validation reached the 16384
+  cap, post-update vLLM canary changed with max diff zero, and vLLM-awake own
+  footprint was about 31 GiB.

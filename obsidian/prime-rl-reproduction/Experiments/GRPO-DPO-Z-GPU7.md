@@ -246,3 +246,71 @@ length `6004`, clipped ratio `.14`. Это подтверждает одинак
 - Partial frozen val была promising but non-conclusive: `.68` start, `.68` at
   step 20, `.69` at step 40; для вывода нужен clean restart from initial actor
   на карте с достаточным запасом и более частый recoverable checkpoint cadence.
+
+### Recoverable `5e-6` restart — H200 GPU 7
+
+- Новый запуск начат с initial SFT actor, а не с failed state: tmux
+  `grpo_vanilla_constant_lr5e6_g7_r2`, output
+  `outputs/grpo_vanilla_constant_lr5e6_full_gpu7_recoverable_r2`, raw log
+  `logs/grpo_vanilla_constant_lr5e6_full_gpu7_recoverable_r2.log`.
+- Resource-only profile: vLLM reservation `.20`, checkpoints каждые 20 steps,
+  limit 2. Algorithmic contract остаётся `constant LR=5e-6`, `G=8`,
+  8 prompts/64 trajectories per optimizer step, LoRA `r=16`, 16K cap.
+- Runtime checkpoint `15-08-2026 21:47 MSK`: step `14/187`, canary на
+  каждом post-update step имеет `changed=true`, resident/source max diff
+  `0`; no traceback/OOM/NaN. Step-10 accuracy `.675`, mean length `4667`,
+  clipped ratio `.025`, grad norm `.0909`. Start frozen-val accuracy
+  `.68`, mean length `6004`.
+- Карта остаётся shared и 100%-utilized; около 15.6 GiB свободно. Наблюдаемый
+  throughput примерно 4–5 min/step, поэтому runtime не сравнивается между
+  методами. Это running artifact, не evidence качества.
+
+## Multi-server LR sweep: constant `1e-5` on A100 — 15-08-2026
+
+### Reproducible opt environment
+
+- Host `ssh opt` (`brain-lab.mipt.ru`): 4×A100 80GB, 32 CPU cores.
+  Project-local `.venv` создан из `uv.lock`; orchestration/build limits:
+  `OMP/BLAS/MKL=2`, `MAX_JOBS=2`, one concurrent build, dataloader workers
+  0. Ни FlashAttention, ни CUDA extension из source не компилировались.
+- Custom merged SFT и datasets перенесены с H200. SHA-256 совпадают:
+  model `ad95d846...`, train Arrow `ea960ea1...`, validation Arrow
+  `1b75930e...`.
+- A100 использует `sdpa` вместо missing FlashAttention 2. TileLang вынесен в
+  optional `hopper` extra: FLA 0.5.0 импортировал TileLang 0.1.9 до проверки
+  `FLA_TILELANG=0`, вызывая duplicate TVM registration `ffi.Tensor`.
+  Minimal Qwen3.5 import падал 2/2 до fix и прошёл 2/2 после него; full CPU
+  suite `91 passed`.
+- Provenance полного запуска: Git `d19d4f0f76c1ff72e0e62d01b2346779c587c914`,
+  config `configs/grpo_vanilla_constant_lr1e5_opt_with_val.yaml`, seed 42.
+
+### GPU gates
+
+- 2K integration smoke `r3`: two optimizer steps, checkpoints 1/2, final
+  adapter, post-update canary `changed=true/max_diff=0`. Step time после
+  warmup `13.19 s`; runtime `160.9 s`.
+- Failed smoke `r1` — TileLang import bug выше. Failed smoke `r2` —
+  launch-only `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` конфликтовал
+  с vLLM CuMemAllocator sleep-mode pool. Оба остановились до optimizer step и
+  не являются training evidence.
+- Full-context gate: one actor microbatch из 8 trajectories, 16K cap,
+  token-logit chunks 256, vLLM `.35`. Clean step `74.76 s`, completion
+  mean/max `2951/6823`, no truncation; validation реально достигла 16384.
+  Post-update canary `changed=true/max_diff=0`; checkpoint-1 сохранён.
+  vLLM-awake snapshot: около 42.3 GiB total GPU usage, включая 11.3 GiB
+  foreign allocations, то есть run footprint около 31 GiB.
+
+### Full `1e-5` launch
+
+- Status: `running-baseline-validation`; remote start
+  `15-08-2026 18:50 UTC` (`21:50 MSK`) on physical A100 GPU 0.
+- tmux `grpo_lr1e5_opt_full_g0_r1`; output
+  `outputs/grpo_vanilla_constant_lr1e5_full_opt_gpu0_val20_r1`; raw log
+  `logs/grpo_vanilla_constant_lr1e5_full_opt_gpu0_val20_r1.log`.
+- Contract: constant LR `1e-5`, 1500 prompts, `G=8`, generation batch 64,
+  actor microbatch 8 × accumulation 8, 187 optimizer steps, 16K cap,
+  correctness-only reward, `T=1/top_p=1/top_k=0`, frozen validation 100
+  prompts every 20 steps, checkpoints every 20.
+- vLLM initialized and step-0 post-reload sync passed
+  (`max_diff=0`). Baseline validation is still running; full run remains
+  non-evidence until a clean finish and fresh frozen-val `maj@8`.
