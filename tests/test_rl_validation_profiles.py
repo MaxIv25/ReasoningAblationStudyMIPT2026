@@ -119,13 +119,30 @@ def test_opt_lr1e5_profile_changes_only_lr_and_save_settings():
     assert lr1e5["training"]["lr_scheduler_type"] == "constant"
     assert lr1e5["training"]["warmup_ratio"] == 0.0
     assert lr1e5["training"]["save_steps"] == 20
+    assert lr1e5["grpo"]["vllm_gpu_memory_utilization"] == 0.35
 
     control_contract = deepcopy(control)
     lr1e5_contract = deepcopy(lr1e5)
     control_contract.pop("run_name")
     lr1e5_contract.pop("run_name")
     for contract in (control_contract, lr1e5_contract):
+        contract["grpo"].pop("vllm_gpu_memory_utilization")
+    for contract in (control_contract, lr1e5_contract):
         contract["training"].pop("learning_rate")
         contract["training"].pop("save_steps")
         contract["training"].pop("save_total_limit")
     assert lr1e5_contract == control_contract
+
+
+def test_opt_lr1e5_smoke_runs_two_a100_sync_cycles():
+    cfg = load_config(
+        str(ROOT / "configs" / "grpo_vanilla_constant_lr1e5_opt_smoke.yaml"),
+        base_config_path=str(ROOT / "configs" / "grpo_base.yaml"),
+    )
+    assert cfg["training"]["learning_rate"] == 1.0e-5
+    assert cfg["training"]["lr_scheduler_type"] == "constant"
+    assert cfg["training"]["max_steps"] == 2
+    assert cfg["grpo"]["generation_batch_size"] == 8
+    assert cfg["grpo"]["max_completion_length"] == 2048
+    assert cfg["validation"]["num_samples"] == 8
+    assert cfg["validation"]["eval_steps"] == 1

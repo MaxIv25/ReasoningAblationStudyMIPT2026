@@ -1,0 +1,24 @@
+inherits: "grpo_vanilla_constant_lr1e5_opt_with_val.yaml"
+run_name: "grpo_vanilla_constant_lr1e5_opt_smoke"
+
+grpo:
+  num_samples: 16
+  generation_batch_size: 8
+  max_completion_length: 2048
+  max_model_len: 3072
+  vllm_gpu_memory_utilization: 0.12
+
+training:
+  max_steps: 2
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  save_steps: 1
+  save_total_limit: 2
+  logging_steps: 1
+
+validation:
+  num_samples: 8
+  eval_steps: 1
+  num_generations: 1
+  eval_on_start: true
+  per_device_eval_batch_size: 8

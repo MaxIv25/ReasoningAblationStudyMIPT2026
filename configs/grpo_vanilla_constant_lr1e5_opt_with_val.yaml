@@ -3,6 +3,11 @@ run_name: "grpo_vanilla_constant_lr1e5_opt"
 
 # Next learning-rate point in the constant-scheduler sweep. The shorter save
 # cadence is operational only and protects a long shared-server run.
+grpo:
+  # 28 GiB absolute vLLM budget on an A100 80GB, close to the successful
+  # 30 GiB H200 GPU-7 profile while leaving room for a colocated LoRA actor.
+  vllm_gpu_memory_utilization: 0.35
+
 training:
   learning_rate: 1.0e-5
   save_steps: 20
