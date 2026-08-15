@@ -105,7 +105,7 @@ def test_recoverable_gpu7_profile_changes_only_resource_and_save_settings():
     assert gpu7_contract == treatment_contract
 
 
-def test_opt_lr1e5_profile_changes_only_lr_and_save_settings():
+def test_opt_lr1e5_profile_changes_only_lr_resource_and_backend_settings():
     control = load_config(
         str(ROOT / "configs" / "grpo_vanilla_constant_with_val.yaml"),
         base_config_path=str(ROOT / "configs" / "grpo_base.yaml"),
@@ -120,6 +120,8 @@ def test_opt_lr1e5_profile_changes_only_lr_and_save_settings():
     assert lr1e5["training"]["warmup_ratio"] == 0.0
     assert lr1e5["training"]["save_steps"] == 20
     assert lr1e5["grpo"]["vllm_gpu_memory_utilization"] == 0.35
+    assert control["model"]["attn_implementation"] == "flash_attention_2"
+    assert lr1e5["model"]["attn_implementation"] == "sdpa"
 
     control_contract = deepcopy(control)
     lr1e5_contract = deepcopy(lr1e5)
@@ -127,6 +129,7 @@ def test_opt_lr1e5_profile_changes_only_lr_and_save_settings():
     lr1e5_contract.pop("run_name")
     for contract in (control_contract, lr1e5_contract):
         contract["grpo"].pop("vllm_gpu_memory_utilization")
+        contract["model"].pop("attn_implementation")
     for contract in (control_contract, lr1e5_contract):
         contract["training"].pop("learning_rate")
         contract["training"].pop("save_steps")
@@ -146,3 +149,4 @@ def test_opt_lr1e5_smoke_runs_two_a100_sync_cycles():
     assert cfg["grpo"]["max_completion_length"] == 2048
     assert cfg["validation"]["num_samples"] == 8
     assert cfg["validation"]["eval_steps"] == 1
+    assert cfg["model"]["attn_implementation"] == "sdpa"

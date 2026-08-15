@@ -3,6 +3,11 @@ run_name: "grpo_vanilla_constant_lr1e5_opt"
 
 # Next learning-rate point in the constant-scheduler sweep. The shorter save
 # cadence is operational only and protects a long shared-server run.
+model:
+  # The opt project environment intentionally avoids compiling FlashAttention
+  # from source on the shared 32-core host. PyTorch SDPA is prebuilt in torch.
+  attn_implementation: "sdpa"
+
 grpo:
   # 28 GiB absolute vLLM budget on an A100 80GB, close to the successful
   # 30 GiB H200 GPU-7 profile while leaving room for a colocated LoRA actor.

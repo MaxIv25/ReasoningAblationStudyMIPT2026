@@ -14,7 +14,7 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
 - [x] Phase 6: Move the project Obsidian knowledge base into the repository
 - [ ] Phase 7: Complete GPU integration, memory profiling, and save/resume verification
 - [x] Phase 8: Restart constant-LR `5e-6` GRPO safely on H200 GPU 7
-- [ ] Phase 9: Audit, commit, and push the reproducible research worktree
+- [x] Phase 9: Audit, commit, and push the reproducible research worktree
 - [ ] Phase 10: Bootstrap a thread-limited environment and artifacts on `ssh opt`
 - [ ] Phase 11: Validate and launch constant-LR `1e-5` GRPO on `ssh opt`
 - [ ] Phase 12: Record multi-server provenance, runtime gates, and handoff
@@ -55,9 +55,14 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
   checkpoint existed because `save_steps=75`.
 - Первый secret-scan command имел shell quoting error; повторный scan с
   отдельными безопасными regex завершён, credential material не найден.
+- Первый direct-transfer checkpoint command не использовал `scp -r`; повторный
+  tracked transfer корректно продолжает копирование каталога без удаления partial artifact.
+- Одна orchestration-сессия прервалась во время долгого `scp -3`; сам transfer
+  был перезапущен как отдельная наблюдаемая PTY-сессия и показывает монотонный progress.
 
 ## Status
 
-**Phase 9 active** — recoverable `5e-6` run is live on H200 GPU 7 with verified
-step-0 sync and ~15.4 GiB reserve. Publish the audited code, then bring up
-`ssh opt` and launch the `1e-5` LR point without overloading its 32 CPU cores.
+**Phase 10 active** — commits `517dd2a` and `d9d0945` are pushed; recoverable
+`5e-6` is live on H200 GPU 7 and has verified post-reload sync through step 3.
+The locked opt environment passes 89 CPU tests with two threads; finish and
+checksum the custom merged SFT transfer before the A100 `1e-5` smoke.
