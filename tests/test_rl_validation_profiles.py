@@ -150,3 +150,26 @@ def test_opt_lr1e5_smoke_runs_two_a100_sync_cycles():
     assert cfg["validation"]["num_samples"] == 8
     assert cfg["validation"]["eval_steps"] == 1
     assert cfg["model"]["attn_implementation"] == "sdpa"
+
+
+def test_opt_lr1e5_full_context_smoke_keeps_full_actor_shape():
+    cfg = load_config(
+        str(
+            ROOT
+            / "configs"
+            / "grpo_vanilla_constant_lr1e5_opt_full_context_smoke.yaml"
+        ),
+        base_config_path=str(ROOT / "configs" / "grpo_base.yaml"),
+    )
+
+    assert cfg["training"]["learning_rate"] == 1.0e-5
+    assert cfg["training"]["max_steps"] == 1
+    assert cfg["training"]["per_device_train_batch_size"] == 8
+    assert cfg["training"]["gradient_accumulation_steps"] == 1
+    assert cfg["grpo"]["generation_batch_size"] == 8
+    assert cfg["grpo"]["max_completion_length"] == 16384
+    assert cfg["grpo"]["max_model_len"] == 17408
+    assert cfg["grpo"]["logprob_chunk_tokens"] == 256
+    assert cfg["grpo"]["vllm_gpu_memory_utilization"] == 0.35
+    assert cfg["validation"]["eval_on_start"] is False
+    assert cfg["model"]["attn_implementation"] == "sdpa"

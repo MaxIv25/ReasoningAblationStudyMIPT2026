@@ -1,0 +1,23 @@
+inherits: "grpo_vanilla_constant_lr1e5_opt_with_val.yaml"
+run_name: "grpo_vanilla_constant_lr1e5_opt_full_context_smoke"
+
+# One real actor microbatch with the full 16K completion cap and the same A100
+# vLLM reservation as the full run. Generation stays at one prompt group so the
+# gate measures actor memory without spending an entire optimizer batch.
+grpo:
+  num_samples: 8
+  generation_batch_size: 8
+
+training:
+  max_steps: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  save_steps: 1
+  save_total_limit: 1
+  logging_steps: 1
+
+validation:
+  num_samples: 8
+  eval_steps: 1000
+  eval_on_start: false
+  per_device_eval_batch_size: 8
