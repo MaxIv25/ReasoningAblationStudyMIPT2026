@@ -17,7 +17,8 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
 - [x] Phase 9: Audit, commit, and push the reproducible research worktree
 - [x] Phase 10: Bootstrap a thread-limited environment and artifacts on `ssh opt`
 - [x] Phase 11: Validate and launch constant-LR `1e-5` GRPO on `ssh opt`
-- [ ] Phase 12: Record multi-server provenance, runtime gates, and handoff
+- [x] Phase 12: Record multi-server provenance, runtime gates, and handoff
+- [ ] Phase 13: Evaluate Base, SFT, and completed RL checkpoints on GSM8K/MATH-500 maj@8
 
 ## Key Questions
 
@@ -42,6 +43,8 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
   settings matched and document server/resource-only deviations separately.
 - Limit setup/build parallelism on `ssh opt` (`OMP_NUM_THREADS=2`,
   `MAX_JOBS=2`, one concurrent build) and avoid source-building FlashAttention.
+- Keep the completed-model test comparison on one H200/vLLM stack with
+  `T=1/top_p=1/top_k=0`, seed 42, and full per-sample trace retention.
 
 ## Errors Encountered
 
@@ -71,14 +74,13 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
   vLLM sleep-mode CuMemAllocator. Retry без этой переменной прошёл два шага.
 - System Python не мог собрать config tests из-за отсутствующего torch;
   contracts выполнены в project-local opt environment после push/fast-forward.
+- Local system Python также не смог собрать evaluator unit test из-за
+  отсутствующего torch; тот же test прошёл в H200 project environment
+  (`1 passed`). Real DPO-Z LoRA smoke затем прошёл на GPU3.
 
 ## Status
 
-**Phase 12 active** — A100 two-step integration smoke and one-step 16K
-full-context gate both finish cleanly with post-update weight-change canaries.
-The A100 `constant LR=1e-5` run was stopped after step 1 because the A100 and
-H200 generation/attention backends do not preserve paired trajectories; its
-~36.6 GiB allocation was released and the artifact is diagnostic only. The
-recoverable `5e-6` H200 GPU-7 run reached checkpoint 20 and is evaluating
-val@20. Future LR ablations stay on one H200 hardware/software path. Keep
-running artifacts non-evidence until clean finish and frozen-val `maj@8`.
+**Phase 13 active** — the same-stack five-model test queue is running in tmux
+`eval_completed_maj8_g3_20260815` on H200 GPU3. Base GSM8K is first; exact
+metrics and all trajectories go to `results/maj8_test_20260815`. The queue is
+non-evidence until all five jobs finish and row-count/hash validation passes.

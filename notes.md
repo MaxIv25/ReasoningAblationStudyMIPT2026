@@ -63,3 +63,20 @@
   74.76 s; train completion mean/max 2951/6823, validation reached the 16384
   cap, post-update vLLM canary changed with max diff zero, and vLLM-awake own
   footprint was about 31 GiB.
+
+## Completed-model test evaluation — 15-08-2026
+
+- Three RL artifacts are genuinely complete at `187/187`: vanilla GRPO with
+  decay, vanilla GRPO with constant LR `1.5e-6`, and GRPO with DPO-Z cosine.
+  PRIME, profiling outputs, and the active `5e-6` run are excluded.
+- Evaluation uses one H200 stack for Base, merged two-epoch SFT, and all three
+  adapters: GSM8K test + MATH-500 test, `maj@8`, 16K,
+  `T=1/top_p=1/top_k=0`, explicit seed 42.
+- The old evaluator retained only 20 summary rows. Commit `849e4f3` adds
+  gzip JSONL streaming for all trajectories, response token counts, verifier
+  outputs, finish reasons, trace SHA-256, a per-benchmark smoke limit, and the
+  proven Qwen3.5 language-only vLLM path.
+- H200 unit test passed and a real final DPO-Z LoRA smoke wrote and hashed all
+  eight expected traces. Full queue started on physical GPU3 with vLLM memory
+  fraction `.30`, leaving about 63 GiB free at generation start despite a
+  foreign 33.7 GiB process.
