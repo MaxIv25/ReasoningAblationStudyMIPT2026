@@ -76,9 +76,9 @@ Bring the repository to a testable author-faithful PRIME baseline, then add isol
 
 **Phase 12 active** — A100 two-step integration smoke and one-step 16K
 full-context gate both finish cleanly with post-update weight-change canaries.
-The full `constant LR=1e-5` run is live on opt GPU 0: baseline validation and
-step 1 finished, and the post-update canary passed. The recoverable `5e-6`
-H200 GPU-7 run reached checkpoint 20 and is evaluating val@20. Cross-server
-step-0 completions are intentionally treated as independent stochastic
-trajectories because A100/H200 execution backends differ. Keep both artifacts
-non-evidence until clean finish and same-stack frozen-val `maj@8`.
+The A100 `constant LR=1e-5` run was stopped after step 1 because the A100 and
+H200 generation/attention backends do not preserve paired trajectories; its
+~36.6 GiB allocation was released and the artifact is diagnostic only. The
+recoverable `5e-6` H200 GPU-7 run reached checkpoint 20 and is evaluating
+val@20. Future LR ablations stay on one H200 hardware/software path. Keep
+running artifacts non-evidence until clean finish and frozen-val `maj@8`.

@@ -302,7 +302,7 @@ length `6004`, clipped ratio `.14`. Это подтверждает одинак
 
 ### Full `1e-5` launch
 
-- Status: `running-baseline-validation`; remote start
+- Status: `stopped-non-comparable`; remote start
   `15-08-2026 18:50 UTC` (`21:50 MSK`) on physical A100 GPU 0.
 - tmux `grpo_lr1e5_opt_full_g0_r1`; output
   `outputs/grpo_vanilla_constant_lr1e5_full_opt_gpu0_val20_r1`; raw log
@@ -353,3 +353,8 @@ Runtime update:
   отдельная stochastic replication для LR `1e-5`, не strict paired trajectory
   с H200. Сравнение качества выполняется позднее единым frozen `maj@8`
   evaluator на одной hardware/software stack.
+- Run остановлен пользователем после step 1 в `19:51 UTC`: strict LR
+  ablation должна использовать одинаковые hardware/software kernels. tmux и
+  trainer завершены, allocation нашего процесса около 36.6 GiB освобождён.
+  Partial A100 artifact сохраняется только как portability diagnostic и не
+  включается в comparison.
