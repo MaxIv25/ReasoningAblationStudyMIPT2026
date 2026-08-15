@@ -9,6 +9,8 @@ Uses vLLM for fast batch inference. Supports:
 """
 
 import argparse
+import gzip
+import hashlib
 import json
 import os
 import re
@@ -32,8 +34,18 @@ from src.utils import (
     get_gpu_memory_info,
     verify_answer,
 )
+from src.rl.model_utils import patch_vllm_language_model_only
 
 logger = setup_logging("evaluate")
+
+
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Hash a potentially large trace artifact without loading it into RAM."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -132,6 +144,9 @@ def evaluate_model(
     gpu_memory_utilization: float = 0.9,
     lora_path: str = None,
     merge_lora: bool = False,
+    seed: int = 42,
+    limit: int | None = None,
+    traces_output: str | None = None,
 ) -> dict:
     """
     Evaluate a model on GSM8K and/or MATH-500.
@@ -153,6 +168,7 @@ def evaluate_model(
     Returns:
         Dict with results per benchmark
     """
+    patch_vllm_language_model_only(True, logger=logger)
     from vllm import LLM, SamplingParams
 
     if benchmarks is None:
@@ -178,6 +194,12 @@ def evaluate_model(
     if "math_hard" in benchmarks:
         all_examples["math_hard"] = load_math_hard()
         logger.info(f"Loaded MATH Level 5: {len(all_examples['math_hard'])} examples")
+    if limit is not None:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        all_examples = {
+            name: examples[:limit] for name, examples in all_examples.items()
+        }
 
     # Load model with vLLM
     logger.info(f"Loading model: {model_path}")
@@ -222,6 +244,8 @@ def evaluate_model(
         dtype="bfloat16",
         trust_remote_code=True,
         max_model_len=max_new_tokens + 4096,  # input (up to 4K) + output
+        language_model_only=True,
+        seed=seed,
     )
     if lora_path:
         llm_kwargs["enable_lora"] = True
@@ -245,9 +269,16 @@ def evaluate_model(
         top_k=top_k,
         max_tokens=max_new_tokens,
         n=num_samples,
+        seed=seed,
     )
 
     logger.info(f"Chat template: {use_chat_template}")
+
+    trace_file = None
+    if traces_output:
+        trace_path = Path(traces_output)
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_file = gzip.open(trace_path, "wt", encoding="utf-8", compresslevel=1)
 
     results = {}
     for bench_name, examples in all_examples.items():
@@ -289,38 +320,67 @@ def evaluate_model(
         total_length = 0
         details = []
 
-        for ex, output in zip(examples, outputs):
-            if num_samples == 1:
-                # pass@1: greedy
-                generated = output.outputs[0].text
+        for example_index, (ex, prompt, output) in enumerate(
+            zip(examples, prompts, outputs)
+        ):
+            sample_records = []
+            for sample_index, out in enumerate(output.outputs):
+                generated = out.text
                 predicted = extract_boxed_answer(generated)
-                is_correct = verify_answer(predicted, ex["answer"])
+                normalized_predicted = (
+                    normalize_latex(predicted) if predicted is not None else None
+                )
+                token_ids = getattr(out, "token_ids", None)
+                sample_record = {
+                    "benchmark": bench_name,
+                    "example_index": example_index,
+                    "sample_index": sample_index,
+                    "question": ex["question"],
+                    "prompt": prompt,
+                    "ground_truth": ex["answer"],
+                    "generated_text": generated,
+                    "predicted": predicted,
+                    "normalized_predicted": normalized_predicted,
+                    "sample_correct": verify_answer(predicted, ex["answer"]),
+                    "response_words": len(generated.split()),
+                    "response_tokens": len(token_ids) if token_ids is not None else None,
+                    "finish_reason": getattr(out, "finish_reason", None),
+                }
+                sample_records.append(sample_record)
+                if trace_file is not None:
+                    trace_file.write(
+                        json.dumps(sample_record, ensure_ascii=False) + "\n"
+                    )
+
+            if num_samples == 1:
+                record = sample_records[0]
+                predicted = record["predicted"]
+                is_correct = record["sample_correct"]
 
                 if is_correct:
                     correct += 1
                 if predicted is not None:
                     format_ok += 1
-                total_length += len(generated.split())
+                total_length += record["response_words"]
 
                 details.append({
                     "question": ex["question"][:100] + "...",
                     "ground_truth": ex["answer"],
                     "predicted": predicted,
                     "correct": is_correct,
-                    "response_length": len(generated.split()),
+                    "response_length": record["response_words"],
                 })
             else:
                 # maj@K: majority voting
                 answers = []
                 raw_answers = []  # Keep raw for display
-                for out in output.outputs:
-                    generated = out.text
-                    predicted = extract_boxed_answer(generated)
+                for record in sample_records:
+                    predicted = record["predicted"]
                     if predicted is not None:
-                        answers.append(normalize_latex(predicted))
+                        answers.append(record["normalized_predicted"])
                         raw_answers.append(predicted)
                         format_ok += 1
-                    total_length += len(generated.split())
+                    total_length += record["response_words"]
 
                 if answers:
                     # Majority vote on normalized answers
@@ -362,6 +422,9 @@ def evaluate_model(
         logger.info(f"  {metric_key}: {accuracy*100:.2f}% ({correct}/{total})")
         logger.info(f"  Format compliance: {format_rate*100:.1f}%")
         logger.info(f"  Avg response length: {avg_length:.0f} words")
+
+    if trace_file is not None:
+        trace_file.close()
 
     # Cleanup
     del llm
@@ -437,6 +500,18 @@ def main():
         help="Merge adapter into base model before eval (required for DoRA, "
              "which vLLM doesn't support natively). Uses PEFT merge_and_unload().",
     )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Explicit vLLM and sampling seed shared by every evaluated model.",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Optional per-benchmark example limit for smoke tests.",
+    )
+    parser.add_argument(
+        "--traces-output", type=str, default=None,
+        help="gzip JSONL path for all per-sample generations and verifier outputs.",
+    )
 
     args = parser.parse_args()
 
@@ -453,11 +528,36 @@ def main():
         gpu_memory_utilization=args.gpu_mem,
         lora_path=args.lora_path,
         merge_lora=args.merge_lora,
+        seed=args.seed,
+        limit=args.limit,
+        traces_output=args.traces_output,
     )
 
     # Add model info
     results["model"] = args.model
     results["gpu_info"] = get_gpu_memory_info()
+    results["evaluation_config"] = {
+        "benchmarks": args.benchmarks,
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "num_samples": args.num_samples,
+        "chat_template": args.chat_template,
+        "tensor_parallel_size": args.tp,
+        "gpu_memory_utilization": args.gpu_mem,
+        "lora_path": args.lora_path,
+        "merge_lora": args.merge_lora,
+        "seed": args.seed,
+        "limit": args.limit,
+    }
+    if args.traces_output:
+        trace_path = Path(args.traces_output)
+        results["traces"] = {
+            "path": str(trace_path),
+            "format": "jsonl.gz",
+            "sha256": sha256_file(trace_path),
+        }
 
     # Save results
     if args.output:
@@ -468,4 +568,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
